@@ -6342,7 +6342,10 @@ function exportLogContent() {
 </script>
 </body></html>"""
 
-def check_proxy_health() -> dict[str, Any]:
+def check_proxy_health(probe_timeout: float | None = None) -> dict[str, Any]:
+    budget = probe_timeout if probe_timeout is not None else (
+        1 if VPN_BACKEND == "softether" and not is_connecting else 5
+    )
     # 1. 检测代理服务端口是否在监听
     is_ipv6 = ":" in LOCAL_PROXY_HOST
     af = socket.AF_INET6 if is_ipv6 else socket.AF_INET
@@ -6407,7 +6410,7 @@ def check_proxy_health() -> dict[str, Any]:
                 "-x", proxy_url,
                 "--noproxy", "",
                 url,
-                "--max-time", "1" if VPN_BACKEND == "softether" and not is_connecting else "5"
+                "--max-time", str(budget)
             ]
             if proxy_user is not None and proxy_pass is not None:
                 cmd.extend(["--proxy-user", f"{proxy_user}:{proxy_pass}"])
@@ -6429,7 +6432,7 @@ def check_proxy_health() -> dict[str, Any]:
         return None
 
     try:
-        if VPN_BACKEND == "softether" and not is_connecting:
+        if VPN_BACKEND == "softether" and (probe_timeout is not None or not is_connecting):
             with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
                 futures = [executor.submit(_curl_check_ip, url) for url in
                            ("https://api.ipify.org", "https://ip.sb")]
@@ -6573,6 +6576,21 @@ def background_proxy_checker() -> None:
                 # A dead OpenVPN process is recovered immediately. Transient
                 # external probe failures must cross the configured threshold.
                 if checked_node_id and should_recover:
+                    if VPN_BACKEND == "softether" and not process_exited and res.get("scope") != "local":
+                        confirmation = check_proxy_health(probe_timeout=3)
+                        if is_connecting or checked_epoch != connection_epoch or checked_node_id != active_openvpn_node_id:
+                            continue
+                        if confirmation["ok"]:
+                            reset_proxy_failure_counter(checked_node_id)
+                            set_state(proxy_ok=True, proxy_ready=True,
+                                      proxy_ip=confirmation["ip"],
+                                      proxy_latency_ms=confirmation["latency_ms"], proxy_error="")
+                            log_to_json("INFO", "Proxy", "快速检测超时，但 3 秒出口复核成功，保留当前节点")
+                            time.sleep(PROXY_CHECK_INTERVAL_SECONDS)
+                            continue
+                        res = confirmation
+                        error_msg = f"快速检测及 3 秒出口复核均失败: {res.get('error', '未知错误')}"
+                        log_to_json("WARNING", "Proxy", error_msg)
                     shared_error = shared_proxy_failure(res.get("scope", ""))
                     if is_connecting or checked_epoch != connection_epoch or checked_node_id != active_openvpn_node_id:
                         continue

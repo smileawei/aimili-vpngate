@@ -567,7 +567,8 @@ class ManagerLogicTests(unittest.TestCase):
 
     def run_checker_once(self, result, shared_error="", threshold=3):
         with (
-            mock.patch.object(manager, "check_proxy_health", return_value=result),
+            mock.patch.object(manager, "check_proxy_health", return_value=result,
+                              side_effect=result if isinstance(result, list) else None) as health,
             mock.patch.object(manager, "shared_proxy_failure", return_value=shared_error),
             mock.patch.object(manager, "PROXY_FAILURE_THRESHOLD", threshold),
             mock.patch.object(manager.time, "sleep", side_effect=[None, KeyboardInterrupt]),
@@ -575,6 +576,7 @@ class ManagerLogicTests(unittest.TestCase):
         ):
             with self.assertRaises(KeyboardInterrupt):
                 manager.background_proxy_checker()
+        self.last_health_calls = health.call_args_list
 
     def test_shared_failure_does_not_blacklist_or_switch(self):
         nodes = self.write_nodes(1)
@@ -822,6 +824,63 @@ class ManagerLogicTests(unittest.TestCase):
         socket.return_value.setsockopt.assert_called_once_with(
             proxy_server.socket.SOL_SOCKET, proxy_server.socket.SO_BINDTODEVICE, b'vpn_primary')
         self.assertEqual('vpn_spare', proxy_server.outbound_interface())
+
+    def test_slow_confirmation_keeps_healthy_primary(self):
+        nodes = self.write_nodes(1)
+        nodes[0]['proto'] = 'tcp'
+        manager.write_json(manager.NODES_FILE, nodes)
+        manager.active_openvpn_node_id = nodes[0]['id']
+        manager.active_openvpn_process = FakeProcess()
+        with mock.patch.object(manager, 'VPN_BACKEND', 'softether'), \
+                mock.patch.object(manager, 'auto_switch_node') as switch:
+            self.run_checker_once([
+                {'ok': False, 'error': 'fast timeout'},
+                {'ok': True, 'ip': '203.0.113.2', 'latency_ms': 1500},
+            ], threshold=1)
+        switch.assert_not_called()
+        self.assertEqual({}, manager.load_blacklist())
+        self.assertTrue(manager.get_state()['proxy_ok'])
+        self.assertEqual(0, manager.consecutive_proxy_failures)
+        self.assertEqual({'probe_timeout': 3}, self.last_health_calls[1].kwargs)
+
+    def test_failed_confirmation_still_switches(self):
+        nodes = self.write_nodes(1)
+        nodes[0]['proto'] = 'tcp'
+        manager.write_json(manager.NODES_FILE, nodes)
+        manager.active_openvpn_node_id = nodes[0]['id']
+        manager.active_openvpn_process = FakeProcess()
+        with mock.patch.object(manager, 'VPN_BACKEND', 'softether'), \
+                mock.patch.object(manager, 'auto_switch_node') as switch:
+            self.run_checker_once([
+                {'ok': False, 'error': 'fast timeout'},
+                {'ok': False, 'error': 'confirmation timeout'},
+            ], threshold=1)
+        switch.assert_called_once_with()
+        self.assertIn('3 秒出口复核均失败', manager.load_blacklist()[nodes[0]['id']]['reason'])
+
+    def test_standby_uses_alternate_confirmation_before_discard(self):
+        hot, session = self.make_hot_spare()
+        hot.slot['failures'] = 1
+        with mock.patch.object(hot, 'verify', side_effect=[None, {'ip':'203.0.113.2','latency_ms':1800}]) as verify:
+            hot.tick()
+        self.assertIsNotNone(hot.slot)
+        self.assertEqual(0, hot.slot['failures'])
+        session.terminate.assert_not_called()
+        verify.assert_any_call(session, timeout=3, url='https://ip.sb')
+
+    def test_confirmation_probe_uses_three_second_parallel_budget(self):
+        result=mock.Mock(returncode=0, stdout='203.0.113.2\n1.5 200\n')
+        with (
+            mock.patch.object(manager, 'VPN_BACKEND', 'softether'),
+            mock.patch.object(manager.socket, 'socket'),
+            mock.patch.object(manager.Path, 'exists', return_value=True),
+            mock.patch.object(manager.subprocess, 'run', return_value=result) as run,
+        ):
+            self.assertTrue(manager.check_proxy_health(probe_timeout=3)['ok'])
+        self.assertEqual(2, run.call_count)
+        for call in run.call_args_list:
+            args=call.args[0]
+            self.assertEqual('3', args[args.index('--max-time')+1])
 
     def test_proxy_failures_reset_when_node_changes(self) -> None:
         self.assertEqual(1, manager.record_proxy_failure("node-a"))

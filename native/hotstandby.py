@@ -26,12 +26,12 @@ class HotStandby:
             slot, self.slot = self.slot, None
         self.dispose(slot)
 
-    def verify(self, session):
+    def verify(self, session, timeout=1.5, url='https://api.ipify.org'):
         started = time.monotonic()
         result = self.backend.command(
             'curl', '-4', '-fsS', '--proxy', '', '--noproxy', '*',
-            '--interface', session.interface, '--max-time', '1.5',
-            'https://api.ipify.org', check=False,
+            '--interface', session.interface, '--max-time', str(timeout),
+            url, check=False,
         )
         if result.returncode:
             return None
@@ -57,6 +57,9 @@ class HotStandby:
         if slot:
             current = next((n for n in self.m.read_nodes() if n['id'] == slot['node']['id']), None)
             result = self.verify(slot['session']) if current and self.allowed(current, cfg) else None
+            if (result is None and slot.get('failures', 0) >= 1
+                    and current and self.allowed(current, cfg)):
+                result = self.verify(slot['session'], timeout=3, url='https://ip.sb')
             with self.lock:
                 if self.slot is not slot:
                     return
