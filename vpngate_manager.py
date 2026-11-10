@@ -4,6 +4,7 @@ from __future__ import annotations
 import base64
 import csv
 import json
+import ipaddress
 import os
 import queue
 import re
@@ -125,6 +126,8 @@ OPENVPN_TEST_TIMEOUT_SECONDS = env_int("OPENVPN_TEST_TIMEOUT_SECONDS", 35, 1)
 MANUAL_TEST_NODE_LIMIT = env_int("MANUAL_TEST_NODE_LIMIT", 5, 1, 20)
 INITIAL_CONNECT_TEST_LIMIT = env_int("INITIAL_CONNECT_TEST_LIMIT", 10, 1, 50)
 NODE_PROBE_WORKERS = env_int("NODE_PROBE_WORKERS", 5, 1, 20)
+NODE_EXIT_PROBE_TIMEOUT_SECONDS = env_int("NODE_EXIT_PROBE_TIMEOUT_SECONDS", 25, 5, 60)
+PROXY_CHECK_INTERVAL_SECONDS = env_int("PROXY_CHECK_INTERVAL_SECONDS", 15, 1, 300)
 PROXY_FAILURE_THRESHOLD = env_int("PROXY_FAILURE_THRESHOLD", 3, 1, 10)
 SWITCH_PREFLIGHT_MAX_AGE_SECONDS = env_int("SWITCH_PREFLIGHT_MAX_AGE_SECONDS", 180, 0, 3600)
 OPENVPN_CMD = os.environ.get("OPENVPN_CMD", "openvpn")
@@ -1863,16 +1866,12 @@ def reconnect_fixed_node_if_needed(ui_cfg: dict[str, Any]) -> bool:
         return False
 
     print(f"[维护线程] 固定 IP 模式下 OpenVPN 未运行，正在重新拉起同一节点: {target_id}", flush=True)
-    previous_connecting = is_connecting
-    is_connecting = False
     try:
         connect_node(target_id)
         return active_openvpn_running()
     except Exception as e:
         print(f"[维护线程] 重新拉起固定节点 {target_id} 失败: {e}", flush=True)
         return False
-    finally:
-        is_connecting = previous_connecting
 
 active_test_indexes = set()
 test_indexes_lock = threading.Lock()
@@ -1911,12 +1910,15 @@ def test_node_by_id(node_id: str) -> dict[str, Any]:
     except Exception as e:
         raise RuntimeError(f"Failed to write temp config file: {e}")
 
-    latency = vpn_utils.ping_latency_ms(h, p, fallback_ping)
+    latency = 0 if VPN_BACKEND == "softether" else vpn_utils.ping_latency_ms(h, p, fallback_ping)
     
     idx = None
     try:
         idx = get_free_test_index()
-        ok, message, _ = run_openvpn_until_ready(str(temp_path), keep_alive=False, route_nopull=True, timeout=12, dev=f"tun{idx}")
+        started = time.monotonic()
+        ok, message, _ = run_openvpn_until_ready(str(temp_path), keep_alive=False, route_nopull=True, timeout=NODE_EXIT_PROBE_TIMEOUT_SECONDS if VPN_BACKEND == "softether" else 12, dev=f"tun{idx}")
+        if VPN_BACKEND == "softether" and ok:
+            latency = max(1, int((time.monotonic() - started) * 1000))
     finally:
         if idx is not None:
             release_test_index(idx)
@@ -1939,16 +1941,20 @@ def test_node_by_id(node_id: str) -> dict[str, Any]:
         "quality": "",
     }
     if ok:
+        if VPN_BACKEND == "softether":
+            temp_node["exit_verified_at"] = time.time()
         vpn_utils.enrich_ip_info([temp_node])
 
     with lock:
         nodes = read_nodes()
         node = next((item for item in nodes if item.get("id") == node_id), None)
-        if node:
+        if node and not node.get("active"):
             node["latency_ms"] = latency
             node["probe_status"] = "available" if ok else "unavailable"
             node["probe_message"] = message
             node["probed_at"] = time.time()
+            if "exit_verified_at" in temp_node:
+                node["exit_verified_at"] = temp_node["exit_verified_at"]
             if ok:
                 for field in IP_ENRICHMENT_FIELDS:
                     value = temp_node.get(field)
@@ -2002,12 +2008,15 @@ def test_multiple_nodes(node_ids: list[str], target_available: int | None = None
                 "probed_at": time.time(),
             }
             
-        latency = vpn_utils.ping_latency_ms(h, p, fallback_ping)
+        latency = 0 if VPN_BACKEND == "softether" else vpn_utils.ping_latency_ms(h, p, fallback_ping)
         tun_idx = None
         try:
             tun_idx = get_free_test_index()
             dev_name = f"tun{tun_idx}"
-            ok, message, _ = run_openvpn_until_ready(str(temp_path), keep_alive=False, route_nopull=True, timeout=12, dev=dev_name)
+            started = time.monotonic()
+            ok, message, _ = run_openvpn_until_ready(str(temp_path), keep_alive=False, route_nopull=True, timeout=NODE_EXIT_PROBE_TIMEOUT_SECONDS if VPN_BACKEND == "softether" else 12, dev=dev_name)
+            if VPN_BACKEND == "softether" and ok:
+                latency = max(1, int((time.monotonic() - started) * 1000))
         finally:
             if tun_idx is not None:
                 release_test_index(tun_idx)
@@ -2027,6 +2036,8 @@ def test_multiple_nodes(node_ids: list[str], target_available: int | None = None
             "probe_message": message,
             "probed_at": time.time(),
         }
+        if VPN_BACKEND == "softether" and ok:
+            temp_node["exit_verified_at"] = time.time()
         return temp_node
 
     updated_nodes_map: dict[str, dict[str, Any]] = {}
@@ -2073,7 +2084,7 @@ def test_multiple_nodes(node_ids: list[str], target_available: int | None = None
                 with lock:
                     current_nodes = read_nodes()
                     for current in current_nodes:
-                        if current.get("id") == nid:
+                        if current.get("id") == nid and not current.get("active"):
                             current.update(result)
                             break
                     write_json(NODES_FILE, sort_all_nodes(current_nodes))
@@ -2097,7 +2108,7 @@ def test_multiple_nodes(node_ids: list[str], target_available: int | None = None
         current_nodes = read_nodes()
         for n in current_nodes:
             nid = n.get("id")
-            if nid in updated_nodes_map:
+            if nid in updated_nodes_map and not n.get("active"):
                 n.update(updated_nodes_map[nid])
         sorted_nodes = sort_all_nodes(current_nodes)
         write_json(NODES_FILE, sorted_nodes)
@@ -2117,7 +2128,8 @@ def schedule_background_refill() -> bool:
         def refill_worker() -> None:
             global background_refill_thread
             try:
-                for delay in (60, 120, 300):
+                delay = 15
+                while True:
                     if background_refill_cancel_event.wait(delay):
                         return
                     ui_cfg = load_ui_config()
@@ -2127,8 +2139,12 @@ def schedule_background_refill() -> bool:
                         maintain_valid_nodes(force=False)
                     except Exception as exc:
                         log_to_json("WARNING", "Main", f"后台节点补齐失败: {exc}")
-                    if active_openvpn_running():
+                    if active_openvpn_running() and get_state().get("proxy_ok"):
                         return
+                    if (not is_connecting and ui_cfg.get("routing_mode") != "fixed_ip"
+                            and not shared_proxy_failure()):
+                        auto_switch_node()
+                    delay = min(delay * 2, 300)
             finally:
                 with background_refill_lock:
                     if background_refill_thread is threading.current_thread():
@@ -2142,7 +2158,10 @@ def schedule_background_refill() -> bool:
         background_refill_thread.start()
         return True
 
-def auto_switch_node(attempt: int = 0) -> None:
+def auto_switch_node(attempt: int = 0, tried: set[str] | None = None) -> None:
+    if is_connecting:
+        return
+    tried = set() if tried is None else set(tried)
     if attempt >= 3:
         print("[自动切换] 连续切换失败已达 3 次，停止切换以防止主线程死锁，将在后台重新加载节点...", flush=True)
         if schedule_background_refill():
@@ -2165,14 +2184,21 @@ def auto_switch_node(attempt: int = 0) -> None:
     # Find the next best available node
     with lock:
         nodes = read_nodes()
+        blacklist = load_blacklist()
         candidates = [
-            n for n in nodes 
-            if n.get("probe_status") == "available" 
+            n for n in nodes
+            if n.get("probe_status") == "available"
             and not n.get("active")
+            and n.get("id") not in tried
+            and n.get("id") not in blacklist
         ]
         candidates = apply_routing_filters(candidates, ui_cfg)
             
-        candidates.sort(key=lambda n: (parse_int(n.get("latency_ms")) or 999999, -parse_int(n.get("score"))))
+        candidates.sort(key=lambda n: (
+            0 if time.time() - float(n.get("exit_verified_at") or 0) < 1800 else 1,
+            parse_int(n.get("latency_ms")) or 999999,
+            -parse_int(n.get("score")),
+        ))
         
     if candidates:
         next_node = candidates[0]
@@ -2185,20 +2211,21 @@ def auto_switch_node(attempt: int = 0) -> None:
             err_msg = f"切换到备用节点 {next_node['id']} 失败: {e}，将尝试下一个..."
             print(f"[自动切换] {err_msg}", flush=True)
             log_to_json("WARNING", "VPN", err_msg)
-            auto_switch_node(attempt + 1)
+            if is_connecting:
+                return
+            shared_error = shared_proxy_failure()
+            if shared_error:
+                set_state(proxy_error=shared_error, last_check_message=shared_error)
+                schedule_background_refill()
+                return
+            auto_switch_node(attempt + 1, tried | {next_node["id"]})
     else:
         msg = "没有可用的备选节点，将自动断开并清理当前连接状态，同时在后台异步获取新节点..."
         if routing_mode == "fixed_region" and target_country:
             msg = f"没有可用的【{target_country}】备选节点，已断开连接，将在后台持续尝试获取新节点..."
         print(f"[自动切换] {msg}", flush=True)
         log_to_json("WARNING", "VPN", msg)
-        stop_active_openvpn()
-        with lock:
-            nodes = read_nodes()
-            for item in nodes:
-                item["active"] = False
-            write_json(NODES_FILE, nodes)
-        set_state(active_openvpn_node_id="", last_check_message=msg)
+        clear_active_connection_state(msg)
         if schedule_background_refill():
             log_to_json("INFO", "Main", "已启动唯一后台节点补齐任务")
 
@@ -2282,7 +2309,7 @@ def connect_node(node_id: str) -> str:
                     str(config_path),
                     keep_alive=False,
                     route_nopull=True,
-                    timeout=12,
+                    timeout=NODE_EXIT_PROBE_TIMEOUT_SECONDS if VPN_BACKEND == "softether" else 12,
                     dev=f"tun{test_index}",
                     cancel_event=cancel_event,
                     track_pending=True,
@@ -2356,7 +2383,7 @@ def connect_node(node_id: str) -> str:
             ip = node.get("ip") or node.get("remote_host")
             port = parse_int(node.get("remote_port"))
             fallback = parse_int(node.get("ping"))
-            latency = vpn_utils.ping_latency_ms(ip, port, fallback)
+            latency = 0 if VPN_BACKEND == "softether" else vpn_utils.ping_latency_ms(ip, port, fallback)
             if latency > 0:
                 last_active_latency = latency
         except Exception:
@@ -2378,6 +2405,8 @@ def connect_node(node_id: str) -> str:
         if latest_ui_cfg.get("routing_mode") == "fixed_ip":
             latest_ui_cfg["fixed_node_id"] = node_id
 
+        if VPN_BACKEND == "softether":
+            last_active_latency = res["latency_ms"]
         latency_str = f"{last_active_latency} ms" if last_active_latency > 0 else "检测超时"
         with lock:
             if not connection_attempt_is_current(token, cancel_event):
@@ -2388,6 +2417,7 @@ def connect_node(node_id: str) -> str:
                 if item["active"]:
                     item["probe_status"] = "available"
                     item["probed_at"] = time.time()
+                    item["exit_verified_at"] = time.time()
                     _ph = f"[{LOCAL_PROXY_HOST}]" if ":" in LOCAL_PROXY_HOST else LOCAL_PROXY_HOST
                     item["probe_message"] = f"Active node. HTTP proxy: http://{_ph}:{LOCAL_PROXY_PORT}"
             write_json(NODES_FILE, sort_all_nodes(current_nodes))
@@ -2445,8 +2475,11 @@ def maintain_valid_nodes(force: bool = False) -> str:
             msg = "当前已有连接或节点测试任务正在运行，请稍后再试"
             set_state(last_check_message=msg)
             return msg
-        is_connecting = True
     try:
+        shared_error = shared_proxy_failure()
+        if shared_error:
+            set_state(last_check_message=shared_error, proxy_error=shared_error)
+            return shared_error
         # A forced refresh must not tear down a healthy tunnel. It only forces
         # the node-pool maintenance path below.
         if not active_openvpn_running():
@@ -2456,20 +2489,11 @@ def maintain_valid_nodes(force: bool = False) -> str:
             if connection_enabled:
                 if routing_mode == "fixed_ip":
                     reconnect_fixed_node_if_needed(ui_cfg)
-                else:
-                    has_active_id = False
-                    with lock:
-                        if active_openvpn_node_id:
-                            has_active_id = True
-                            stop_active_openvpn()
-                    if has_active_id:
-                        print("[维护线程] 检测到当前 OpenVPN 进程已意外退出，准备自动切换节点", flush=True)
-                        is_connecting = False
-                        auto_switch_node()
-                        is_connecting = True
+                elif active_openvpn_node_id:
+                    auto_switch_node()
 
         try:
-            set_state(is_connecting=True, last_check_message="正在拉取最新的免费 VPN 节点列表...")
+            set_state(last_check_message="正在拉取最新的免费 VPN 节点列表...")
             candidates = fetch_candidates()
         except Exception as exc:
             vpn_utils.check_and_fix_dns()
@@ -2520,6 +2544,9 @@ def maintain_valid_nodes(force: bool = False) -> str:
                             "is_hosting",
                             "is_mobile",
                             "ip_type_reason",
+                            "ip_type_confidence",
+                            "ip_type_sources",
+                            "exit_verified_at",
                         ]:
                             if previous.get(key) not in (None, ""):
                                 cand[key] = previous.get(key)
@@ -2567,7 +2594,7 @@ def maintain_valid_nodes(force: bool = False) -> str:
                 msg = f"首次快速连接模式：优先测试 {len(fast_test_ids)} 个高优先级节点，发现可用节点后立即连接"
                 print(f"[快速首连] {msg}", flush=True)
                 log_to_json("INFO", "Main", msg)
-                set_state(is_connecting=True, last_check_message=msg)
+                set_state(last_check_message=msg)
                 fast_results = test_multiple_nodes(fast_test_ids, target_available=TARGET_VALID_NODES)
                 systemic_probe_failure = next(
                     (
@@ -2592,8 +2619,7 @@ def maintain_valid_nodes(force: bool = False) -> str:
                     available_candidates = apply_routing_filters(available_candidates, ui_cfg)
 
                 if available_candidates:
-                    is_connecting = False
-                    set_state(is_connecting=False, last_check_message="快速首连已找到可用节点，正在建立连接...")
+                    set_state(last_check_message="快速首连已找到可用节点，正在建立连接...")
                     auto_switch_node()
                     if active_openvpn_running():
                         valid_nodes_count = len([n for n in read_nodes() if n.get("probe_status") == "available"])
@@ -2605,7 +2631,6 @@ def maintain_valid_nodes(force: bool = False) -> str:
                             valid_nodes=valid_nodes_count,
                         )
                         return message
-                    is_connecting = True
 
         tested_results: list[dict[str, Any]] = []
         if systemic_probe_failure:
@@ -2629,9 +2654,8 @@ def maintain_valid_nodes(force: bool = False) -> str:
             print(f"[周期检测] {msg}", flush=True)
             log_to_json("INFO", "Main", msg)
 
-            set_state(is_connecting=True, last_check_message="正在并发检测所有节点可用性...")
+            set_state(last_check_message="正在并发检测所有节点可用性...")
             tested_results = test_multiple_nodes(to_test_ids, target_available=TARGET_VALID_NODES)
-        is_connecting = False
         
         with lock:
             merged = read_nodes()
@@ -2655,6 +2679,7 @@ def maintain_valid_nodes(force: bool = False) -> str:
                 print(warn_msg, flush=True)
                 log_to_json("WARNING", "Main", warn_msg)
             
+            available_candidates = []
             if not active_openvpn_running():
                 ui_cfg = load_ui_config()
                 connection_enabled = ui_cfg.get("connection_enabled", True)
@@ -2665,8 +2690,8 @@ def maintain_valid_nodes(force: bool = False) -> str:
                         available_candidates = [n for n in merged if n.get("probe_status") == "available"]
                         available_candidates = apply_routing_filters(available_candidates, ui_cfg)
                         
-                        if available_candidates:
-                            auto_switch_node()
+        if available_candidates:
+            auto_switch_node()
 
         valid_nodes_count = len([n for n in merged if n.get("probe_status") == "available"])
         total_tested = len(fast_results) + len(tested_results)
@@ -2681,7 +2706,6 @@ def maintain_valid_nodes(force: bool = False) -> str:
     except Exception as e:
         raise e
     finally:
-        is_connecting = False
         maintenance_lock.release()
 
 
@@ -6335,7 +6359,8 @@ def check_proxy_health() -> dict[str, Any]:
         diag_msg = diag[1] if diag else f"端口 {LOCAL_PROXY_PORT} 连接失败，原因: {e}"
         return {
             "ok": False,
-            "error": f"代理服务未运行 ({diag_msg})"
+            "error": f"代理服务未运行 ({diag_msg})",
+            "scope": "local",
         }
     finally:
         if s is not None:
@@ -6371,6 +6396,7 @@ def check_proxy_health() -> dict[str, Any]:
                 "curl", "-s",
                 "-w", "\n%{time_total} %{http_code}",
                 "-x", proxy_url,
+                "--noproxy", "",
                 url,
                 "--max-time", "5"
             ]
@@ -6386,6 +6412,7 @@ def check_proxy_health() -> dict[str, Any]:
                         if len(time_info) == 2:
                             total_time_str, http_code = time_info
                             if http_code == "200" and ip:
+                                ipaddress.ip_address(ip)
                                 latency_ms = int(float(total_time_str) * 1000)
                                 return {"ok": True, "ip": ip, "latency_ms": latency_ms}
             except Exception:
@@ -6431,11 +6458,34 @@ def check_proxy_health() -> dict[str, Any]:
         if not port_still_listening:
             diag = vpn_utils.diagnose_local_obstructions(LOCAL_PROXY_PORT, host=LOCAL_PROXY_HOST)
             if diag:
-                return {"ok": False, "error": f"出口连接测试失败 | 本机诊断结果: {diag[1]}"}
+                return {"ok": False, "error": f"出口连接测试失败 | 本机诊断结果: {diag[1]}", "scope": "local"}
             
         return {"ok": False, "error": "出口连接测试失败 (ip.sb 和 api.ipify.org 均无法连通，可能是节点已失效或 VPS 防火墙限制了 UDP/TCP 出站端口)"}
     except Exception as e:
         return {"ok": False, "error": f"出口连接测试异常: {e}"}
+
+def shared_proxy_failure(scope: str = "") -> str:
+    """Diagnose shared infrastructure before blaming a VPNGate volunteer."""
+    if scope == "local":
+        return "本地代理服务异常，保留当前节点，等待代理服务恢复"
+    if VPN_BACKEND != "softether":
+        return ""
+    upstream = os.environ.get("SOFTETHER_UPSTREAM_PROXY", "").strip()
+    if not upstream:
+        return ""
+    for url in ("https://api.ipify.org", "https://ip.sb"):
+        try:
+            result = subprocess.run([
+                "curl", "-fsS", "--proxy", upstream, "--noproxy", "",
+                "--max-time", "5", url,
+            ], capture_output=True, text=True, timeout=6)
+            if result.returncode == 0:
+                ipaddress.ip_address(result.stdout.strip())
+                return ""
+        except (OSError, ValueError, subprocess.TimeoutExpired):
+            pass
+    return "上游代理出站检测失败，暂缓切换和拉黑节点，等待上游恢复"
+
 
 def reset_proxy_failure_counter(node_id: str = "") -> None:
     global consecutive_proxy_failures, last_proxy_failure_node_id
@@ -6454,7 +6504,7 @@ def record_proxy_failure(node_id: str) -> int:
 
 def background_proxy_checker() -> None:
     global last_checker_heartbeat, is_connecting
-    time.sleep(30)
+    time.sleep(PROXY_CHECK_INTERVAL_SECONDS)
     while True:
         last_checker_heartbeat = time.time()
         try:
@@ -6463,8 +6513,13 @@ def background_proxy_checker() -> None:
                 continue
 
             checked_node_id = active_openvpn_node_id
+            checked_epoch = connection_epoch
+            if not checked_node_id:
+                ui_cfg = load_ui_config()
+                if ui_cfg.get("connection_enabled", True):
+                    schedule_background_refill()
             res = check_proxy_health()
-            if checked_node_id != active_openvpn_node_id:
+            if is_connecting or checked_epoch != connection_epoch or checked_node_id != active_openvpn_node_id:
                 continue
             if res["ok"]:
                 reset_proxy_failure_counter(checked_node_id)
@@ -6500,6 +6555,14 @@ def background_proxy_checker() -> None:
                 # A dead OpenVPN process is recovered immediately. Transient
                 # external probe failures must cross the configured threshold.
                 if checked_node_id and should_recover:
+                    shared_error = shared_proxy_failure(res.get("scope", ""))
+                    if is_connecting or checked_epoch != connection_epoch or checked_node_id != active_openvpn_node_id:
+                        continue
+                    if shared_error:
+                        set_state(proxy_error=shared_error, last_check_message=shared_error)
+                        log_to_json("WARNING", "Proxy", shared_error)
+                        time.sleep(PROXY_CHECK_INTERVAL_SECONDS)
+                        continue
                     reset_proxy_failure_counter(checked_node_id)
                     ui_cfg = load_ui_config()
                     routing_mode = ui_cfg.get("routing_mode", "auto")
@@ -6521,7 +6584,7 @@ def background_proxy_checker() -> None:
         except Exception as e:
             print(f"[错误] 代理后台检测发生异常: {e}", flush=True)
             log_to_json("ERROR", "Proxy", f"检测守护线程发生异常: {e}")
-        time.sleep(30)
+        time.sleep(PROXY_CHECK_INTERVAL_SECONDS)
 
 def active_node_pinger() -> None:
     global last_pinger_heartbeat
@@ -6536,7 +6599,7 @@ def active_node_pinger() -> None:
                     port = parse_int(node.get("remote_port"))
                     fallback = parse_int(node.get("ping"))
                     if ip:
-                        latency = vpn_utils.ping_latency_ms(ip, port, fallback)
+                        latency = parse_int(get_state().get("proxy_latency_ms")) if VPN_BACKEND == "softether" else vpn_utils.ping_latency_ms(ip, port, fallback)
                         if latency > 0:
                             set_state(active_node_latency=f"{latency} ms")
                         else:
@@ -6667,7 +6730,7 @@ class Handler(BaseHTTPRequestHandler):
                         def bg_ping(ip_addr: str, port: int, fallback: int) -> None:
                             global last_active_latency
                             try:
-                                latency = vpn_utils.ping_latency_ms(ip_addr, port, fallback)
+                                latency = parse_int(get_state().get("proxy_latency_ms")) if VPN_BACKEND == "softether" else vpn_utils.ping_latency_ms(ip_addr, port, fallback)
                                 if latency > 0:
                                     last_active_latency = latency
                             except Exception:
@@ -7152,15 +7215,11 @@ class Handler(BaseHTTPRequestHandler):
                         maintenance_lock.release()
                         self.send_json({"ok": False, "error": "当前已有连接或节点维护任务正在运行，请稍后再试"}, HTTPStatus.CONFLICT)
                         return
-                    is_connecting = True
                 try:
-                    set_state(is_connecting=True, last_check_message="正在手动测试节点可用性...")
+                    set_state(last_check_message="正在手动测试节点可用性...")
                     tested_nodes = test_multiple_nodes(node_ids)
                     self.send_json({"ok": True, "nodes": tested_nodes})
                 finally:
-                    with lock:
-                        is_connecting = False
-                    set_state(is_connecting=False)
                     maintenance_lock.release()
             except Exception as exc:
                 self.send_json({"ok": False, "error": str(exc)}, HTTPStatus.INTERNAL_SERVER_ERROR)
@@ -7224,15 +7283,11 @@ class Handler(BaseHTTPRequestHandler):
                         maintenance_lock.release()
                         self.send_json({"ok": False, "error": "当前已有连接或节点维护任务正在运行，请稍后再试"}, HTTPStatus.CONFLICT)
                         return
-                    is_connecting = True
                 try:
-                    set_state(is_connecting=True, last_check_message="正在手动测试节点可用性...")
+                    set_state(last_check_message="正在手动测试节点可用性...")
                     updated_node = test_node_by_id(node_id)
                     self.send_json({"ok": True, "node": updated_node})
                 finally:
-                    with lock:
-                        is_connecting = False
-                    set_state(is_connecting=False)
                     maintenance_lock.release()
             except Exception as exc:
                 self.send_json({"ok": False, "error": str(exc)}, HTTPStatus.INTERNAL_SERVER_ERROR)

@@ -1,5 +1,6 @@
 from pathlib import Path
 import subprocess
+import runpy
 import tempfile
 import threading
 from types import SimpleNamespace
@@ -26,6 +27,14 @@ class NativeBackendTests(unittest.TestCase):
         self.assertTrue(any("/DISABLEUDP:yes" in call.args for call in vpn.call_args_list))
         self.assertFalse(any(call.args[0] in {"NicCreate", "NicGet"} for call in vpn.call_args_list))
 
+    @staticmethod
+    def ready_command(*args, **kwargs):
+        if args[0] == "curl":
+            return SimpleNamespace(returncode=0, stdout="203.0.113.5\n")
+        if "addr" in args and "show" in args:
+            return SimpleNamespace(returncode=0, stdout="inet 10.211.1.2/16")
+        return SimpleNamespace(returncode=0, stdout="default via 10.211.254.254")
+
     def test_preflight_cleans_its_adapter_without_touching_active_routes(self):
         with tempfile.TemporaryDirectory() as root:
             config = Path(root) / "test.ovpn"
@@ -33,12 +42,22 @@ class NativeBackendTests(unittest.TestCase):
             with mock.patch.object(backend, "configure_account"), \
                     mock.patch.object(backend.Session, "connected", return_value=True), \
                     mock.patch.object(backend, "vpn") as vpn, \
-                    mock.patch.object(backend, "command") as command:
+                    mock.patch.object(backend, "command", side_effect=self.ready_command) as command, \
+                    mock.patch.object(backend.subprocess, "Popen") as dhcp:
+                dhcp.return_value.poll.return_value = None
                 ok, _, session = backend.run_until_ready(str(config), False, 12, "tun10")
         self.assertTrue(ok)
         self.assertIsNone(session)
         vpn.assert_any_call("NicDelete", "probetun10", check=False)
-        command.assert_not_called()
+        for call in command.call_args_list:
+            self.assertNotIn("tun0", call.args)
+            self.assertNotIn("100", call.args)
+        command.assert_any_call("ip", "route", "flush", "table", "210", check=False)
+        curl_calls = [call for call in command.call_args_list if call.args[0] == "curl"]
+        self.assertTrue(curl_calls)
+        self.assertIn("vpn_probetun10", curl_calls[0].args)
+        self.assertIn("AIMILI_ROUTE_TABLE=210", dhcp.call_args.args[0])
+        dhcp.return_value.terminate.assert_called_once()
 
     def test_cancelled_handshake_removes_pending_session(self):
         event = threading.Event()
@@ -48,6 +67,7 @@ class NativeBackendTests(unittest.TestCase):
             config.write_text("client\nproto tcp-client\nremote 192.0.2.1 443\n")
             with mock.patch.object(backend, "configure_account"), \
                     mock.patch.object(backend.Session, "connected", return_value=False), \
+                    mock.patch.object(backend, "command"), \
                     mock.patch.object(backend, "vpn") as vpn:
                 ok, message, session = backend.run_until_ready(str(config), False, 12, "tun11", event)
         self.assertFalse(ok)
@@ -68,4 +88,47 @@ class NativeBackendTests(unittest.TestCase):
         session.dhcp.kill.assert_called_once()
         vpn.assert_any_call("AccountDisconnect", "gate", check=False)
         command.assert_any_call("ip", "-4", "addr", "flush", "dev", "tun0", check=False)
-        self.assertEqual(1, session.poll())
+        self.assertEqual(0, session.poll())
+
+    def test_reconnecting_account_is_not_treated_as_a_dead_process(self):
+        session = backend.Session("gate", "native")
+        with mock.patch.object(session, "connected", return_value=False):
+            self.assertIsNone(session.poll())
+
+    def test_handshake_with_broken_exit_is_unavailable_and_cleans_probe(self):
+        def fail_exit(*args, **kwargs):
+            if args[0] == "curl":
+                return SimpleNamespace(returncode=28, stdout="")
+            return self.ready_command(*args, **kwargs)
+
+        with tempfile.TemporaryDirectory() as root:
+            config = Path(root) / "test.ovpn"
+            config.write_text("client\nproto tcp-client\nremote 192.0.2.1 443\n")
+            with mock.patch.object(backend, "configure_account"), \
+                    mock.patch.object(backend.Session, "connected", return_value=True), \
+                    mock.patch.object(backend, "vpn") as vpn, \
+                    mock.patch.object(backend, "command", side_effect=fail_exit) as command, \
+                    mock.patch.object(backend.subprocess, "Popen") as dhcp:
+                dhcp.return_value.poll.return_value = None
+                ok, message, session = backend.run_until_ready(str(config), False, 12, "tun10")
+        self.assertFalse(ok)
+        self.assertIn("HTTPS 出口验证失败", message)
+        self.assertIsNone(session)
+        vpn.assert_any_call("NicDelete", "probetun10", check=False)
+        command.assert_any_call("ip", "rule", "del", "oif", "vpn_probetun10", "table", "210", check=False)
+        dhcp.return_value.terminate.assert_called_once()
+
+    def test_probe_dhcp_uses_its_own_routing_table(self):
+        env = {
+            "interface": "vpn_probetun10", "reason": "BOUND", "AIMILI_ROUTE_TABLE": "210",
+            "new_ip_address": "10.211.1.2", "new_subnet_mask": "255.255.0.0",
+            "new_routers": "10.211.254.254",
+        }
+        with mock.patch.dict(backend.os.environ, env, clear=True), \
+                mock.patch.object(subprocess, "run") as run:
+            runpy.run_path(str(Path(__file__).parents[1] / "native" / "dhcp.py"))
+        routes = [c.args[0] for c in run.call_args_list if "route" in c.args[0]]
+        self.assertEqual(2, len(routes))
+        for args in routes:
+            self.assertIn("210", args)
+            self.assertNotIn("100", args)

@@ -10,6 +10,7 @@ def ip(*args):
 
 
 interface = os.environ["interface"]
+route_table = str(int(os.environ.get("AIMILI_ROUTE_TABLE", "100")))
 reason = os.environ.get("reason", "")
 if reason == "PREINIT":
     ip("link", "set", interface, "up")
@@ -22,10 +23,10 @@ elif reason in {"BOUND", "RENEW", "REBIND", "REBOOT"}:
     if old_address and old_address != str(address.ip):
         ip("-4", "addr", "flush", "dev", interface)
     ip("addr", "replace", str(address), "dev", interface)
-    ip("route", "replace", str(address.network), "dev", interface, "table", "100")
-    ip("route", "replace", "default", "via", gateway, "dev", interface, "table", "100")
+    ip("route", "replace", str(address.network), "dev", interface, "table", route_table)
+    ip("route", "replace", "default", "via", gateway, "dev", interface, "table", route_table)
     print(f"SoftEther DHCP: {address}, gateway {gateway}", flush=True)
 elif reason in {"EXPIRE", "FAIL", "RELEASE", "STOP"}:
     ip("-4", "addr", "flush", "dev", interface)
     # A new container may receive a DHCPNAK before table 100 exists.
-    subprocess.run(["ip", "route", "flush", "table", "100"], check=False, capture_output=True)
+    subprocess.run(["ip", "route", "flush", "table", route_table], check=False, capture_output=True)

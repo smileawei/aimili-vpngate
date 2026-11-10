@@ -562,6 +562,184 @@ class ManagerLogicTests(unittest.TestCase):
         self.assertFalse(manager.is_connecting)
         self.assertEqual(previous_epoch + 1, manager.connection_epoch)
 
+    def run_checker_once(self, result, shared_error="", threshold=3):
+        with (
+            mock.patch.object(manager, "check_proxy_health", return_value=result),
+            mock.patch.object(manager, "shared_proxy_failure", return_value=shared_error),
+            mock.patch.object(manager, "PROXY_FAILURE_THRESHOLD", threshold),
+            mock.patch.object(manager.time, "sleep", side_effect=[None, KeyboardInterrupt]),
+            mock.patch.object(manager, "log_to_json"),
+        ):
+            with self.assertRaises(KeyboardInterrupt):
+                manager.background_proxy_checker()
+
+    def test_shared_failure_does_not_blacklist_or_switch(self):
+        nodes = self.write_nodes(1)
+        manager.active_openvpn_node_id = nodes[0]["id"]
+        manager.active_openvpn_process = FakeProcess()
+        with mock.patch.object(manager, "auto_switch_node") as switch:
+            self.run_checker_once({"ok": False, "error": "timeout"}, "上游代理出站检测失败", threshold=1)
+        switch.assert_not_called()
+        self.assertEqual({}, manager.load_blacklist())
+        self.assertIn("上游代理", manager.get_state()["proxy_error"])
+
+    def test_softether_transient_disconnect_respects_failure_threshold(self):
+        from native.backend import Session
+        nodes = self.write_nodes(1)
+        manager.active_openvpn_node_id = nodes[0]["id"]
+        manager.active_openvpn_process = Session("gate", "native")
+        with mock.patch.object(manager, "auto_switch_node") as switch:
+            self.run_checker_once({"ok": False, "error": "timeout"})
+        switch.assert_not_called()
+        self.assertEqual(1, manager.consecutive_proxy_failures)
+        self.assertEqual({}, manager.load_blacklist())
+
+    def test_sustained_node_failure_blacklists_and_switches(self):
+        nodes = self.write_nodes(1)
+        manager.active_openvpn_node_id = nodes[0]["id"]
+        manager.active_openvpn_process = FakeProcess()
+        with mock.patch.object(manager, "auto_switch_node") as switch:
+            self.run_checker_once({"ok": False, "error": "timeout"}, threshold=1)
+        switch.assert_called_once_with()
+        self.assertIn(nodes[0]["id"], manager.load_blacklist())
+        self.assertEqual("unavailable", manager.read_nodes()[0]["probe_status"])
+
+    def test_maintenance_does_not_pause_exit_checker(self):
+        manager.active_openvpn_node_id = "active"
+        manager.active_openvpn_process = FakeProcess()
+        def fetch():
+            self.assertFalse(manager.is_connecting)
+            self.run_checker_once({"ok": False, "error": "timeout"}, threshold=1)
+            return []
+        with (
+            mock.patch.object(manager, "fetch_candidates", side_effect=fetch),
+            mock.patch.object(manager, "auto_switch_node") as switch,
+        ):
+            manager.maintain_valid_nodes()
+        switch.assert_called_once_with()
+
+    def test_auto_switch_never_repeats_failed_candidate_within_round(self):
+        nodes = self.write_nodes(4)
+        for n in nodes:
+            n["probe_status"] = "available"
+        manager.write_json(manager.NODES_FILE, nodes)
+        with (
+            mock.patch.object(manager, "connect_node", side_effect=RuntimeError("failed")) as connect,
+            mock.patch.object(manager, "shared_proxy_failure", return_value=""),
+            mock.patch.object(manager, "schedule_background_refill", return_value=True) as refill,
+            mock.patch.object(manager, "log_to_json"),
+        ):
+            manager.auto_switch_node()
+        self.assertEqual(["node-0", "node-1", "node-2"], [c.args[0] for c in connect.call_args_list])
+        refill.assert_called_once_with()
+
+    def test_auto_switch_skips_blacklisted_node(self):
+        nodes = self.write_nodes(2)
+        for n in nodes:
+            n["probe_status"] = "available"
+        manager.write_json(manager.NODES_FILE, nodes)
+        manager.mark_blacklisted(nodes[0], "failed exit")
+        with mock.patch.object(manager, "connect_node") as connect, mock.patch.object(manager, "log_to_json"):
+            manager.auto_switch_node()
+        connect.assert_called_once_with("node-1")
+
+    def test_inflight_probe_cannot_overwrite_newly_active_node(self):
+        nodes = self.write_nodes(1)
+        def ready(*args, **kwargs):
+            current = manager.read_nodes()
+            current[0].update(active=True, probe_status="available", exit_verified_at=123)
+            manager.write_json(manager.NODES_FILE, current)
+            return False, "stale failure", None
+        with (
+            mock.patch.object(manager, "run_openvpn_until_ready", side_effect=ready),
+            mock.patch.object(manager.vpn_utils, "ping_latency_ms", return_value=10),
+        ):
+            manager.test_multiple_nodes([nodes[0]["id"]])
+        self.assertEqual("available", manager.read_nodes()[0]["probe_status"])
+        self.assertEqual(123, manager.read_nodes()[0]["exit_verified_at"])
+
+    def test_refill_continues_beyond_three_attempts(self):
+        with (
+            mock.patch.object(manager.threading, "Thread") as thread,
+            mock.patch.object(manager.background_refill_cancel_event, "wait", side_effect=[False]*5+[True]) as wait,
+            mock.patch.object(manager, "maintain_valid_nodes") as maintain,
+            mock.patch.object(manager, "active_openvpn_running", return_value=False),
+            mock.patch.object(manager, "shared_proxy_failure", return_value=""),
+            mock.patch.object(manager, "auto_switch_node") as switch,
+        ):
+            self.assertTrue(manager.schedule_background_refill())
+            thread.call_args.kwargs["target"]()
+        self.assertEqual(5, maintain.call_count)
+        self.assertEqual(5, switch.call_count)
+        self.assertEqual([15, 30, 60, 120, 240, 300], [c.args[0] for c in wait.call_args_list])
+
+    def test_upstream_health_checks_actual_proxy_egress(self):
+        with (
+            mock.patch.object(manager, "VPN_BACKEND", "softether"),
+            mock.patch.dict(manager.os.environ, {"SOFTETHER_UPSTREAM_PROXY": "socks5://192.0.2.253:1081"}),
+            mock.patch.object(manager.subprocess, "run", return_value=mock.Mock(returncode=0, stdout="203.0.113.9")) as run,
+        ):
+            self.assertEqual("", manager.shared_proxy_failure())
+        self.assertIn("socks5://192.0.2.253:1081", run.call_args.args[0])
+        self.assertIn("--noproxy", run.call_args.args[0])
+
+    def test_unreachable_upstream_is_reported_as_shared_failure(self):
+        with (
+            mock.patch.object(manager, "VPN_BACKEND", "softether"),
+            mock.patch.dict(manager.os.environ, {"SOFTETHER_UPSTREAM_PROXY": "socks5://192.0.2.253:1081"}),
+            mock.patch.object(manager.subprocess, "run", return_value=mock.Mock(returncode=28, stdout="")) as run,
+        ):
+            self.assertIn("暂缓切换", manager.shared_proxy_failure())
+        self.assertEqual(2, run.call_count)
+
+    def test_refresh_keeps_residential_classification_evidence(self):
+        nodes = self.write_nodes(1)
+        nodes[0].update(ip_type="residential", ip_type_confidence="medium", ip_type_sources=["ip-api"], probe_status="available")
+        manager.write_json(manager.NODES_FILE, nodes)
+        manager.active_openvpn_process = FakeProcess()
+        candidate = {k: v for k, v in nodes[0].items() if k not in manager.IP_ENRICHMENT_FIELDS}
+        with (
+            mock.patch.object(manager, "fetch_candidates", return_value=[candidate]),
+            mock.patch.object(manager, "test_multiple_nodes", return_value=[]),
+            mock.patch.object(manager, "log_to_json"),
+        ):
+            manager.maintain_valid_nodes()
+        stored = manager.read_nodes()[0]
+        self.assertEqual("medium", stored["ip_type_confidence"])
+        self.assertEqual(["ip-api"], stored["ip_type_sources"])
+        self.assertEqual(1, len(manager.apply_routing_filters([stored], {"routing_ip_type": "residential"})))
+
+    def test_shared_failure_pauses_pool_probes(self):
+        with (
+            mock.patch.object(manager, "shared_proxy_failure", return_value="上游不可用"),
+            mock.patch.object(manager, "fetch_candidates") as fetch,
+            mock.patch.object(manager, "test_multiple_nodes") as probe,
+        ):
+            self.assertEqual("上游不可用", manager.maintain_valid_nodes())
+        fetch.assert_not_called()
+        probe.assert_not_called()
+        self.assertFalse(manager.maintenance_lock.locked())
+
+    def test_checker_discards_result_from_previous_connection_epoch(self):
+        manager.active_openvpn_node_id = "same-node"
+        manager.active_openvpn_process = FakeProcess()
+        calls = []
+        def check():
+            if calls:
+                raise KeyboardInterrupt
+            calls.append(True)
+            manager.connection_epoch += 1
+            return {"ok": False, "error": "stale failure"}
+        with (
+            mock.patch.object(manager, "check_proxy_health", side_effect=check),
+            mock.patch.object(manager.time, "sleep"),
+            mock.patch.object(manager, "auto_switch_node") as switch,
+        ):
+            with self.assertRaises(KeyboardInterrupt):
+                manager.background_proxy_checker()
+        switch.assert_not_called()
+        self.assertEqual(0, manager.consecutive_proxy_failures)
+
     def test_proxy_failures_reset_when_node_changes(self) -> None:
         self.assertEqual(1, manager.record_proxy_failure("node-a"))
         self.assertEqual(2, manager.record_proxy_failure("node-a"))

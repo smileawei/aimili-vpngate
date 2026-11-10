@@ -44,3 +44,14 @@ docker compose logs -f --tail=100 softether
 
 健康检查仅验证 Web 服务，VPN 出站状态可在后台查看或通过代理请求验证。
 原 OpenVPN 服务保留在 `legacy-openvpn` profile；两个后端应分别部署，避免共享数据目录和监听端口。
+
+## 自动恢复
+
+- `PROXY_CHECK_INTERVAL_SECONDS`：出口守护间隔，默认 15 秒；每轮请求耗时另计。
+- `PROXY_FAILURE_THRESHOLD`：连续失败阈值，默认 3；成功一次会清零。SoftEther 短暂重连也遵守该阈值。
+- `NODE_EXIT_PROBE_TIMEOUT_SECONDS`：SoftEther 备用检测和切换预检总预算，默认 25 秒，覆盖握手、DHCP 与 HTTPS 出口验证。
+- 备用网卡使用独立 DHCP 状态和 202～299 路由表，活动连接继续使用 `tun0` 和 table 100。
+- 节点列表中的 SoftEther 探测耗时包含握手、DHCP 与出口验证，不是单次 ping RTT；活动节点显示实际代理出口请求耗时。
+- 达到失败阈值后先检查共享上游；253 出站或本地代理异常时暂缓换节点及拉黑。
+- 单轮最多尝试三个不同备用，之后持续补齐：15、30、60、120、240、300 秒，随后维持 300 秒退避，直到出口恢复或连接禁用。
+- 固定 IP 模式仍只重连同一节点，住宅、地区及收藏筛选继续生效。
