@@ -132,3 +132,23 @@ class NativeBackendTests(unittest.TestCase):
         for args in routes:
             self.assertIn("210", args)
             self.assertNotIn("100", args)
+
+    def test_retained_probe_keeps_dhcp_and_adapter_until_explicit_cleanup(self):
+        with tempfile.TemporaryDirectory() as root:
+            config = Path(root) / "test.ovpn"
+            config.write_text("client\nproto tcp-client\nremote 192.0.2.1 443\n")
+            with mock.patch.object(backend, "configure_account"), \
+                    mock.patch.object(backend.Session, "connected", return_value=True), \
+                    mock.patch.object(backend, "vpn") as vpn, \
+                    mock.patch.object(backend, "command", side_effect=self.ready_command), \
+                    mock.patch.object(backend.subprocess, "Popen") as dhcp:
+                dhcp.return_value.poll.return_value = None
+                ok, _, session = backend.run_until_ready(str(config), False, 12, "tun10", retain=True)
+                self.assertTrue(ok)
+                self.assertIsNotNone(session)
+                self.assertFalse(session.stopped)
+                dhcp.return_value.terminate.assert_not_called()
+                self.assertFalse(any(c.args[0] == "NicDelete" for c in vpn.call_args_list))
+                session.terminate()
+                dhcp.return_value.terminate.assert_called_once()
+                vpn.assert_any_call("NicDelete", "probetun10", check=False)

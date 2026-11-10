@@ -105,8 +105,11 @@ class ManagerLogicTests(unittest.TestCase):
         manager.background_refill_thread = None
         manager.background_refill_cancel_event.clear()
         manager.active_sessions.clear()
+        manager.hot_standby = None
+        proxy_server.set_outbound_interface("tun0")
 
     def tearDown(self) -> None:
+        proxy_server.set_outbound_interface("tun0")
         if manager.connection_attempt_lock.locked():
             manager.connection_attempt_lock.release()
         manager.background_refill_cancel_event.set()
@@ -739,6 +742,86 @@ class ManagerLogicTests(unittest.TestCase):
                 manager.background_proxy_checker()
         switch.assert_not_called()
         self.assertEqual(0, manager.consecutive_proxy_failures)
+
+    def make_hot_spare(self):
+        from native.hotstandby import HotStandby
+        import time
+        nodes = self.write_nodes(2)
+        nodes[0]['active'] = True
+        nodes[1]['probe_status'] = 'available'
+        manager.write_json(manager.NODES_FILE, nodes)
+        manager.active_openvpn_process = FakeProcess()
+        manager.active_openvpn_node_id = 'node-0'
+        hot = HotStandby(manager, mock.Mock())
+        session = mock.Mock(interface='vpn_probetun90')
+        hot.slot = dict(node=nodes[1], session=session, index=90,
+                        verified=time.monotonic(), ip='203.0.113.2', latency_ms=10)
+        return hot, session
+
+    def test_hot_promotion_changes_proxy_and_preserves_reserved_adapter(self):
+        hot, session = self.make_hot_spare()
+        with mock.patch.object(manager.threading, 'Thread'):
+            with mock.patch.object(manager, 'release_test_index') as release:
+                self.assertTrue(hot.promote())
+                release.assert_not_called()
+                self.assertEqual('vpn_probetun90', manager.proxy_server.outbound_interface())
+                self.assertEqual('node-1', manager.active_openvpn_node_id)
+                self.assertTrue(manager.get_state()['proxy_ok'])
+                self.assertIsNone(hot.slot)
+                session.terminate()
+                session.terminate()
+                release.assert_called_once_with(90)
+
+    def test_hot_promotion_rejects_expired_health(self):
+        hot, session = self.make_hot_spare()
+        hot.slot['verified'] -= 10
+        self.assertFalse(hot.promote())
+        self.assertEqual('node-0', manager.active_openvpn_node_id)
+        session.terminate.assert_not_called()
+
+    def test_hot_promotion_respects_fixed_ip_policy(self):
+        hot, session = self.make_hot_spare()
+        cfg=manager.load_ui_config()
+        cfg['routing_mode']='fixed_ip'
+        manager.write_json(manager.DATA_DIR/'ui_auth.json',cfg)
+        self.assertFalse(hot.promote())
+        self.assertEqual('node-0', manager.active_openvpn_node_id)
+        self.assertFalse(manager.is_connecting)
+
+    def test_hot_promotion_cannot_restore_a_cancelled_connection(self):
+        hot, session = self.make_hot_spare()
+        original_terminate = session.terminate
+        with mock.patch.object(manager, 'connection_attempt_is_current', side_effect=[True, False]):
+            self.assertFalse(hot.promote())
+        self.assertEqual('node-0', manager.active_openvpn_node_id)
+        self.assertFalse(manager.is_connecting)
+        original_terminate.assert_called_once_with()
+
+    def test_hot_clear_only_removes_spare(self):
+        hot, session = self.make_hot_spare()
+        with mock.patch.object(manager, 'release_test_index') as release:
+            hot.clear()
+            hot.clear()
+        session.terminate.assert_called_once_with()
+        release.assert_called_once_with(90)
+        self.assertEqual('node-0', manager.active_openvpn_node_id)
+        self.assertTrue(hot.cancel.is_set())
+
+    def test_proxy_pins_dns_and_connection_to_same_interface(self):
+        proxy_server.set_outbound_interface('vpn_primary')
+        def resolve(host):
+            self.assertEqual('vpn_primary', proxy_server.outbound_interface())
+            proxy_server.set_outbound_interface('vpn_spare')
+            return '203.0.113.2'
+        with (
+            mock.patch.object(proxy_server, 'resolve_dns_over_tun0', side_effect=resolve),
+            mock.patch.object(proxy_server.socket, 'getaddrinfo', return_value=[(2,1,6,'',('203.0.113.2',443))]),
+            mock.patch.object(proxy_server.socket, 'socket') as socket,
+        ):
+            proxy_server.create_connection(('example.com',443))
+        socket.return_value.setsockopt.assert_called_once_with(
+            proxy_server.socket.SOL_SOCKET, proxy_server.socket.SO_BINDTODEVICE, b'vpn_primary')
+        self.assertEqual('vpn_spare', proxy_server.outbound_interface())
 
     def test_proxy_failures_reset_when_node_changes(self) -> None:
         self.assertEqual(1, manager.record_proxy_failure("node-a"))

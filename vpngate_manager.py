@@ -127,8 +127,8 @@ MANUAL_TEST_NODE_LIMIT = env_int("MANUAL_TEST_NODE_LIMIT", 5, 1, 20)
 INITIAL_CONNECT_TEST_LIMIT = env_int("INITIAL_CONNECT_TEST_LIMIT", 10, 1, 50)
 NODE_PROBE_WORKERS = env_int("NODE_PROBE_WORKERS", 5, 1, 20)
 NODE_EXIT_PROBE_TIMEOUT_SECONDS = env_int("NODE_EXIT_PROBE_TIMEOUT_SECONDS", 25, 5, 60)
-PROXY_CHECK_INTERVAL_SECONDS = env_int("PROXY_CHECK_INTERVAL_SECONDS", 15, 1, 300)
-PROXY_FAILURE_THRESHOLD = env_int("PROXY_FAILURE_THRESHOLD", 3, 1, 10)
+PROXY_CHECK_INTERVAL_SECONDS = env_int("PROXY_CHECK_INTERVAL_SECONDS", 1 if VPN_BACKEND == "softether" else 15, 1, 300)
+PROXY_FAILURE_THRESHOLD = env_int("PROXY_FAILURE_THRESHOLD", 2 if VPN_BACKEND == "softether" else 3, 1, 10)
 SWITCH_PREFLIGHT_MAX_AGE_SECONDS = env_int("SWITCH_PREFLIGHT_MAX_AGE_SECONDS", 180, 0, 3600)
 OPENVPN_CMD = os.environ.get("OPENVPN_CMD", "openvpn")
 OPENVPN_AUTH_USER = os.environ.get("OPENVPN_AUTH_USER", "vpn")
@@ -185,6 +185,7 @@ active_connection_cancel_event: threading.Event | None = None
 connection_epoch = 0
 active_openvpn_node_id = ""
 is_connecting = False
+hot_standby = None
 last_active_ping_time = 0.0
 last_active_latency = 0
 consecutive_proxy_failures = 0
@@ -528,6 +529,7 @@ def get_state() -> dict[str, Any]:
     state["app_version_label"] = APP_VERSION_LABEL
     state["deployment_mode"] = DEPLOYMENT_MODE
     state["deployment_mode_label"] = DEPLOYMENT_MODE_LABEL
+    state["active_interface"] = proxy_server.outbound_interface()
     state["vpn_backend"] = VPN_BACKEND
     state["vpn_protocol"] = VPN_PROTOCOL_LABEL
     
@@ -554,6 +556,8 @@ def safe_name(value: str) -> str:
     return value.strip("._") or "node"
 
 def clear_active_connection_state(message: str) -> None:
+    if hot_standby is not None and not load_ui_config().get("connection_enabled", True):
+        hot_standby.clear()
     stop_active_openvpn()
     with lock:
         nodes = read_nodes()
@@ -1610,6 +1614,7 @@ def cleanup_policy_routing() -> None:
 
 def stop_active_openvpn() -> None:
     global active_openvpn_process, active_openvpn_node_id
+    proxy_server.set_outbound_interface("tun0")
     with lock:
         cleanup_policy_routing()
         config_to_delete = None
@@ -2181,6 +2186,9 @@ def auto_switch_node(attempt: int = 0, tried: set[str] | None = None) -> None:
         print("[自动切换] 当前处于固定 IP 模式，不进行自动连接或切换。", flush=True)
         return
 
+    if hot_standby is not None and hot_standby.promote():
+        return
+
     # Find the next best available node
     with lock:
         nodes = read_nodes()
@@ -2368,6 +2376,7 @@ def connect_node(node_id: str) -> str:
                 raise ConnectionCancelled("连接操作已取消")
             active_openvpn_process = process
             active_openvpn_node_id = node_id
+            proxy_server.set_outbound_interface(getattr(process, "interface", "tun0"))
         set_state(tunnel_ready=True, proxy_ready=False)
         
         set_state(active_node_latency="配置路由", last_check_message="正在配置策略路由规则与流量转发...")
@@ -5053,7 +5062,7 @@ function render(){
   if ($("current_version_label")) $("current_version_label").textContent = versionLabel;
   if ($("deployment_mode_label")) {
     const modeLabel = state.deployment_mode_label || "Python 源码";
-    $("deployment_mode_label").textContent = `${modeLabel}部署 · ${state.vpn_protocol || "OpenVPN"} · 更新通道：main`;
+    $("deployment_mode_label").textContent = `${modeLabel}部署 · ${state.vpn_protocol || "OpenVPN"}${state.vpn_backend === "softether" ? (state.routing_mode === "fixed_ip" ? " · 热备停用" : (state.standby_ready ? " · 热备就绪" : " · 热备准备中")) : ""} · 更新通道：main`;
   }
 
   const activeNode = nodes.find(n => n && n.active);
@@ -6370,7 +6379,7 @@ def check_proxy_health() -> dict[str, Any]:
                 pass
 
     # 2. 检测虚拟网卡 tun0 是否存在 (Linux 下)
-    tun_path = Path("/sys/class/net/tun0")
+    tun_path = Path("/sys/class/net") / proxy_server.outbound_interface()
     if sys.platform.startswith("linux") and not tun_path.exists():
         return {
             "ok": False,
@@ -6398,7 +6407,7 @@ def check_proxy_health() -> dict[str, Any]:
                 "-x", proxy_url,
                 "--noproxy", "",
                 url,
-                "--max-time", "5"
+                "--max-time", "1" if VPN_BACKEND == "softether" and not is_connecting else "5"
             ]
             if proxy_user is not None and proxy_pass is not None:
                 cmd.extend(["--proxy-user", f"{proxy_user}:{proxy_pass}"])
@@ -6420,6 +6429,15 @@ def check_proxy_health() -> dict[str, Any]:
         return None
 
     try:
+        if VPN_BACKEND == "softether" and not is_connecting:
+            with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
+                futures = [executor.submit(_curl_check_ip, url) for url in
+                           ("https://api.ipify.org", "https://ip.sb")]
+                for future in concurrent.futures.as_completed(futures):
+                    result = future.result()
+                    if result:
+                        return result
+            return {"ok": False, "error": "两路 HTTPS 出口快速检测失败"}
         result = _curl_check_ip("https://api.ipify.org")
         if result:
             return result
@@ -6817,7 +6835,7 @@ class Handler(BaseHTTPRequestHandler):
             if ovpn_ok:
                 ovpn_details = f"已连接节点: {active_openvpn_node_id}"
                 if sys.platform.startswith("linux"):
-                    if not Path("/sys/class/net/tun0").exists():
+                    if not (Path("/sys/class/net") / proxy_server.outbound_interface()).exists():
                         ovpn_err = "[警告] 虚拟网卡 (tun0) 未启用，可能存在策略路由配置问题。"
             else:
                 if active_openvpn_node_id:
@@ -7419,6 +7437,10 @@ def main() -> None:
         print("[警告] 代理网关启动超时，继续执行脚本...", flush=True)
 
     if VPN_BACKEND == "softether":
+        global hot_standby
+        from hotstandby import HotStandby
+        hot_standby = HotStandby(sys.modules[__name__], softether_backend)
+        threading.Thread(target=hot_standby.run, daemon=True).start()
         ui_cfg = load_ui_config()
         initial_node = ui_cfg.get("last_native_node_id", "")
         if ui_cfg.get("connection_enabled", True) and initial_node:

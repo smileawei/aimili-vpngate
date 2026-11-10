@@ -118,7 +118,7 @@ class Session:
         return 0 if self.stopped else self.poll()
 
 
-def run_until_ready(config_file, keep_alive, timeout, dev, cancel_event=None):
+def run_until_ready(config_file, keep_alive, timeout, dev, cancel_event=None, retain=False):
     content = Path(config_file).read_text(encoding="utf-8")
     host, port, proto = vpn_utils.parse_remote(content, "")
     if "tcp" not in proto:
@@ -126,6 +126,7 @@ def run_until_ready(config_file, keep_alive, timeout, dev, cancel_event=None):
     name = "gate" if keep_alive else f"probe_{dev}"
     nic = "native" if keep_alive else f"probe{dev}"
     session = Session(name, nic, probe=not keep_alive)
+    retained = False
     deadline = time.monotonic() + timeout
     try:
         configure_account(name, nic, host, port, probe=not keep_alive)
@@ -177,7 +178,8 @@ def run_until_ready(config_file, keep_alive, timeout, dev, cancel_event=None):
                                 ipaddress.ip_address(result.stdout.strip())
                             except ValueError:
                                 continue
-                            return True, "SoftEther SSL-VPN 握手、DHCP 与 HTTPS 出口验证成功", None
+                            retained = retain
+                            return True, "SoftEther SSL-VPN 握手、DHCP 与 HTTPS 出口验证成功", session if retain else None
                     raise RuntimeError("SoftEther 隧道已建立但 HTTPS 出口验证失败")
                 return True, "SoftEther SSL-VPN 已连接，DHCP 与策略路由就绪", session
             if session.dhcp.poll() is not None or time.monotonic() >= deadline:
@@ -187,5 +189,5 @@ def run_until_ready(config_file, keep_alive, timeout, dev, cancel_event=None):
         session.terminate()
         return False, str(exc), None
     finally:
-        if not keep_alive:
+        if not keep_alive and not retained:
             session.terminate()

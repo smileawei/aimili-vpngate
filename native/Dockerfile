@@ -4,7 +4,8 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 COPY native/start.py native/dhcp.py /opt/native/
 COPY native/backend.py /app/softether_backend.py
-COPY vpngate_manager.py /app/vpngate_manager.py
+COPY native/hotstandby.py /app/hotstandby.py
+COPY proxy_server.py vpngate_manager.py /app/
 RUN chmod 755 /opt/native/dhcp.py
 HEALTHCHECK --interval=30s --timeout=5s --start-period=60s --retries=3 \
     CMD python3 -c "import socket; s=socket.create_connection(('127.0.0.1',8787),3); s.close()"

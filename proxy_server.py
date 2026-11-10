@@ -6,6 +6,19 @@ import secrets
 import select
 import socket
 import threading
+import contextvars
+
+_outbound_interface = "tun0"
+_request_interface = contextvars.ContextVar("proxy_interface", default=None)
+
+
+def set_outbound_interface(interface: str) -> None:
+    global _outbound_interface
+    _outbound_interface = interface
+
+
+def outbound_interface() -> str:
+    return _request_interface.get() or _outbound_interface
 import urllib.parse
 import time
 from typing import Any
@@ -109,7 +122,7 @@ def dns_query_over_tun0(host: str, qtype: int, dns_server: str, timeout: float) 
         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         sock.settimeout(timeout)
         try:
-            sock.setsockopt(socket.SOL_SOCKET, socket.SO_BINDTODEVICE, b"tun0")
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_BINDTODEVICE, outbound_interface().encode())
         except OSError as e:
             if "operation not permitted" in str(e).lower() or e.errno == 1:
                 print("[DNS 绑定失败] [错误代码 3006] DNS 解析绑定 tun0 权限不足，请确保程序以 root 权限运行！", flush=True)
@@ -193,7 +206,12 @@ def resolve_dns_over_tun0(host: str, dns_server: str = "8.8.8.8", timeout: float
 
 def create_connection(address: tuple[str, int], timeout: float = 20) -> socket.socket:
     host, port = address
-    resolved_ip = resolve_dns_over_tun0(host)
+    interface = _outbound_interface
+    token = _request_interface.set(interface)
+    try:
+        resolved_ip = resolve_dns_over_tun0(host)
+    finally:
+        _request_interface.reset(token)
     if resolved_ip:
         host = resolved_ip
 
@@ -204,7 +222,7 @@ def create_connection(address: tuple[str, int], timeout: float = 20) -> socket.s
         try:
             sock = socket.socket(af, socktype, proto)
             sock.settimeout(timeout)
-            sock.setsockopt(socket.SOL_SOCKET, socket.SO_BINDTODEVICE, b"tun0")
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_BINDTODEVICE, interface.encode())
             sock.connect(sa)
             return sock
         except OSError as e:
