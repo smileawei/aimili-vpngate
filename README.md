@@ -271,3 +271,22 @@ ssh -N \
 [正式版本](https://github.com/baoweise-bot/aimili-vpngate/releases/latest) · [问题反馈](https://github.com/baoweise-bot/aimili-vpngate/issues) · [GPL-3.0 License](LICENSE)
 
 </div>
+
+---
+
+## 本仓库新增功能（2026-11-10）
+
+本节记录 [smileawei/aimili-vpngate](https://github.com/smileawei/aimili-vpngate) 在原项目基础上增加的功能，以上保留原项目说明。
+
+- **SoftEther SSL-VPN 后端**：新增 Docker Compose 部署，保留原 OpenVPN 后端；通过 `SOFTETHER_UPSTREAM_PROXY` 配置上游代理，节点检测、主连接及热备使用同一上游。
+- **一主一热备**：长期保留两条独立隧道，分别维护网卡、DHCP 和路由；主连接故障时直接提升已验证的热备，随后自动补齐新的备用。
+- **快速故障恢复**：SoftEther 默认每 1 秒检测出口、连续失败 2 次触发恢复；双 HTTPS 检测并发执行，单路超时 1 秒。两次主动断线实测约 3.6 秒、2.3 秒恢复，实际耗时取决于网络及热备状态；已有 TCP 连接需客户端重连。
+- **可靠的备用检测**：完成握手、DHCP 和 HTTPS 出口验证后才视为可用；后台节点检测不阻塞出口守护，公共上游故障期间暂缓拉黑及切换，无健康热备时回退到普通切换和持续补齐。
+- **保留路由限制**：住宅、国家及收藏筛选继续生效；固定 IP 模式停用热备，只重连原节点。
+- **可选内网免登录**：`data/ui_auth.json` 支持 `"auth_enabled": false` 和 `"secret_path": ""`，可直接从根路径访问后台；默认仍启用认证。
+- **后台与验证**：后台显示热备状态；新增主备提升、并发出口绑定、取消连接及资源清理测试，共 83 项测试通过。
+
+本仓库的 SoftEther 镜像目前通过源码本地构建，普通启动或重启复用已有镜像；修改代码后需重新构建。
+SoftEther 默认 Web 端口为 `8787`，HTTP CONNECT / SOCKS5 代理共用端口 `7929`。
+
+部署步骤见 [DEPLOYMENT.md](DEPLOYMENT.md)，完整修改记录见 [RELEASE_NOTES.md](RELEASE_NOTES.md)。
