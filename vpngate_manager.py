@@ -62,6 +62,11 @@ import vpn_utils
 import proxy_server
 import snapshot_utils
 
+VPN_BACKEND = os.environ.get("VPN_BACKEND", "openvpn").strip().lower()
+VPN_PROTOCOL_LABEL = "SoftEther SSL-VPN" if VPN_BACKEND == "softether" else "OpenVPN"
+if VPN_BACKEND == "softether":
+    import softether_backend
+
 def env_int(name: str, default: int, min_value: int | None = None, max_value: int | None = None) -> int:
     raw = os.environ.get(name)
     try:
@@ -316,6 +321,7 @@ def load_ui_config() -> dict[str, Any]:
     with lock:
         auth_file = DATA_DIR / "ui_auth.json"
         config = {
+            "auth_enabled": True,
             "username": "",
             "secret_path": "EJsW2EeBo9lY",
             "password": "",
@@ -489,7 +495,10 @@ def read_nodes() -> list[dict[str, Any]]:
     raw = read_json(NODES_FILE, [])
     if not isinstance(raw, list):
         return []
-    return [item for item in raw if isinstance(item, dict)]
+    nodes = [item for item in raw if isinstance(item, dict)]
+    if VPN_BACKEND == "softether":
+        nodes = [item for item in nodes if "tcp" in str(item.get("proto", ""))]
+    return nodes
 
 def get_state() -> dict[str, Any]:
     global active_openvpn_node_id, is_connecting
@@ -516,6 +525,8 @@ def get_state() -> dict[str, Any]:
     state["app_version_label"] = APP_VERSION_LABEL
     state["deployment_mode"] = DEPLOYMENT_MODE
     state["deployment_mode_label"] = DEPLOYMENT_MODE_LABEL
+    state["vpn_backend"] = VPN_BACKEND
+    state["vpn_protocol"] = VPN_PROTOCOL_LABEL
     
     # Pre-populate settings inputs in UI
     ui_cfg = load_ui_config()
@@ -1053,6 +1064,8 @@ def rows_to_candidates(
             config_text = decode_config(row.get("OpenVPN_ConfigData_Base64", ""))
             snapshot_utils.validate_openvpn_config(config_text)
             node = row_to_node(row, config_text)
+            if VPN_BACKEND == "softether" and "tcp" not in node["proto"]:
+                continue
         except Exception as row_exc:
             print(f"[fetch_candidates] 跳过损坏或不安全的节点配置记录: {row_exc}", flush=True)
             log_to_json("WARNING", "Main", f"跳过损坏或不安全的节点配置记录: {row_exc}")
@@ -1285,6 +1298,9 @@ def openvpn_command(config_file: str, route_nopull: bool, dev: str = "tun0") -> 
     return command
 
 def stop_process(process: subprocess.Popen[str] | None) -> None:
+    if process is not None and getattr(process, "is_softether_session", False):
+        process.terminate()
+        return
     if process is None or process.poll() is not None:
         return
     try:
@@ -1427,6 +1443,8 @@ def run_openvpn_until_ready(
 ) -> tuple[bool, str, subprocess.Popen[str] | None]:
     global pending_openvpn_process
     limit = timeout if timeout is not None else OPENVPN_TEST_TIMEOUT_SECONDS
+    if VPN_BACKEND == "softether":
+        return softether_backend.run_until_ready(config_file, keep_alive, limit, dev, cancel_event)
     try:
         process = subprocess.Popen(
             openvpn_command(config_file, route_nopull, dev),
@@ -1542,6 +1560,11 @@ def run_openvpn_until_ready(
 
 
 def setup_policy_routing(interface: str = "tun0") -> bool:
+    if VPN_BACKEND == "softether":
+        # SoftEther is Ethernet: DHCP supplies a gateway, unlike OpenVPN's TUN.
+        result = subprocess.run(["ip", "route", "show", "table", "100"],
+                                capture_output=True, text=True, timeout=2)
+        return result.returncode == 0 and "default via " in result.stdout
     try:
         subprocess.run(["ip", "rule", "del", "table", "100"], capture_output=True, timeout=2)
     except Exception:
@@ -2235,7 +2258,7 @@ def connect_node(node_id: str) -> str:
             DATA_DIR.mkdir(exist_ok=True, parents=True)
             write_json(auth_file, ui_cfg)
 
-        set_state(active_node_latency="写入配置", last_check_message="正在写入 OpenVPN 节点配置文件...")
+        set_state(active_node_latency="写入配置", last_check_message=f"正在准备 {VPN_PROTOCOL_LABEL} 节点配置...")
         config_path = Path(node["config_file"])
         try:
             CONFIG_DIR.mkdir(exist_ok=True, parents=True)
@@ -2286,7 +2309,7 @@ def connect_node(node_id: str) -> str:
         stop_active_openvpn()
         stopped_existing = True
 
-        set_state(active_node_latency="启动核心", last_check_message="正在启动 OpenVPN Core 核心服务并建立连接...")
+        set_state(active_node_latency="启动核心", last_check_message=f"正在启动 {VPN_PROTOCOL_LABEL} 并建立连接...")
         ok, message, process = run_openvpn_until_ready(
             str(config_path),
             keep_alive=True,
@@ -2350,6 +2373,8 @@ def connect_node(node_id: str) -> str:
         latest_ui_cfg = load_ui_config()
         validate_node_allowed_by_routing(node, latest_ui_cfg)
         latest_ui_cfg["connection_enabled"] = True
+        if VPN_BACKEND == "softether":
+            latest_ui_cfg["last_native_node_id"] = node_id
         if latest_ui_cfg.get("routing_mode") == "fixed_ip":
             latest_ui_cfg["fixed_node_id"] = node_id
 
@@ -4365,8 +4390,8 @@ INDEX_HTML = r"""<!doctype html>
         </div>
         
         <div class="form-group" style="margin-bottom: 20px;">
-          <label class="form-label" for="cred_suffix">登录安全后缀 (仅字母和数字)</label>
-          <input type="text" id="cred_suffix" class="input-field" required pattern="[A-Za-z0-9]+" placeholder="EJsW2EeBo9lY">
+          <label class="form-label" for="cred_suffix">登录安全后缀 (留空使用根路径)</label>
+          <input type="text" id="cred_suffix" class="input-field" pattern="[A-Za-z0-9]*" placeholder="留空使用根路径">
         </div>
         
         <div style="display: flex; gap: 12px; justify-content: flex-end;">
@@ -5004,7 +5029,7 @@ function render(){
   if ($("current_version_label")) $("current_version_label").textContent = versionLabel;
   if ($("deployment_mode_label")) {
     const modeLabel = state.deployment_mode_label || "Python 源码";
-    $("deployment_mode_label").textContent = `${modeLabel}部署 · 更新通道：main`;
+    $("deployment_mode_label").textContent = `${modeLabel}部署 · ${state.vpn_protocol || "OpenVPN"} · 更新通道：main`;
   }
 
   const activeNode = nodes.find(n => n && n.active);
@@ -5792,7 +5817,7 @@ function handleRoutingModeChange(mode) {
     warningDiv.style.color = "var(--warning)";
     warningDiv.style.background = "rgba(245, 158, 11, 0.1)";
     warningDiv.style.border = "1px solid rgba(245, 158, 11, 0.2)";
-    warningDiv.innerHTML = `⚠️ <strong>固定IP</strong>：锁定当前连接的节点。不管该节点是否失效，系统都绝不自动切换至其他IP；如果节点由于网络故障失效，会造成代理中断（但如果OpenVPN连接意外退出，脚本将尝试为您在后台重新拉起连接同一IP）。<br><strong>提示</strong>：您可以在主页节点列表中直接点击“连接”按钮来选择并锁定不同的IP节点。`;
+    warningDiv.innerHTML = `⚠️ <strong>固定IP</strong>：锁定当前连接的节点。不管该节点是否失效，系统都绝不自动切换至其他IP；如果节点由于网络故障失效，会造成代理中断（如果 VPN 连接意外退出，脚本将尝试在后台重新连接同一IP）。<br><strong>提示</strong>：您可以在主页节点列表中直接点击“连接”按钮来选择并锁定不同的IP节点。`;
   } else {
     countryGroup.style.display = "none";
     warningDiv.style.color = "var(--text-secondary)";
@@ -5878,8 +5903,8 @@ async function saveCredentials(e) {
     return;
   }
   
-  if (!/^[A-Za-z0-9]+$/.test(suffix)) {
-    errorDivEl.textContent = "登录安全后缀仅能由英文字母和数字组成";
+  if (suffix && !/^[A-Za-z0-9]+$/.test(suffix)) {
+    errorDivEl.textContent = "登录安全后缀可留空，或仅由英文字母和数字组成";
     errorDivEl.style.display = "block";
     return;
   }
@@ -5916,7 +5941,7 @@ async function saveCredentials(e) {
         setTimeout(() => {
           const protocol = window.location.protocol;
           const host = formatUrlHost(window.location.hostname);
-          window.location.href = `${protocol}//${host}:${port}/${suffix}/`;
+          window.location.href = `${protocol}//${host}:${port}/${suffix ? suffix + '/' : ''}`;
         }, 4000);
       } else {
         successDiv.textContent = data.reauth_required ? "账号密码保存成功，请重新登录..." : "账号密码保存成功，已即时生效！";
@@ -6368,10 +6393,10 @@ def check_proxy_health() -> dict[str, Any]:
         return None
 
     try:
-        result = _curl_check_ip("http://ip.sb")
+        result = _curl_check_ip("https://api.ipify.org")
         if result:
             return result
-        result = _curl_check_ip("http://api.ipify.org")
+        result = _curl_check_ip("https://ip.sb")
         if result:
             return result
             
@@ -6536,6 +6561,8 @@ class Handler(BaseHTTPRequestHandler):
 
     def is_authorized(self) -> bool:
         ui_cfg = load_ui_config()
+        if ui_cfg.get("auth_enabled", True) is False:
+            return True
         pwd = ui_cfg.get("password")
         if not pwd:
             print("[Auth] 管理后台密码为空，已拒绝访问。请检查 ui_auth.json。", flush=True)
@@ -6731,10 +6758,10 @@ class Handler(BaseHTTPRequestHandler):
                         ovpn_err = "[警告] 虚拟网卡 (tun0) 未启用，可能存在策略路由配置问题。"
             else:
                 if active_openvpn_node_id:
-                    ovpn_err = "连接已中断或 OpenVPN 核心程序异常退出。"
+                    ovpn_err = f"连接已中断或 {VPN_PROTOCOL_LABEL} 核心程序异常退出。"
                     ovpn_details = f"尝试连接节点 {active_openvpn_node_id} 失败"
             openvpn_status = {
-                "name": "OpenVPN 核心连接",
+                "name": f"{VPN_PROTOCOL_LABEL} 核心连接",
                 "status": "running" if ovpn_ok else "stopped",
                 "details": ovpn_details,
                 "error": ovpn_err
@@ -6879,8 +6906,8 @@ class Handler(BaseHTTPRequestHandler):
                     self.send_json({"ok": False, "error": "网页管理端口范围必须是 1 至 65535"}, HTTPStatus.BAD_REQUEST)
                     return
 
-                if not new_suffix or not re.match(r"^[A-Za-z0-9]+$", new_suffix):
-                    self.send_json({"ok": False, "error": "安全后缀仅能由英文字母和数字组成"}, HTTPStatus.BAD_REQUEST)
+                if new_suffix and not re.fullmatch(r"[A-Za-z0-9]+", new_suffix):
+                    self.send_json({"ok": False, "error": "安全后缀可留空，或仅由英文字母和数字组成"}, HTTPStatus.BAD_REQUEST)
                     return
 
                 expected_username = ui_cfg.get("username", "")
@@ -7259,7 +7286,10 @@ class Tee:
 
 def main() -> None:
     ensure_dirs()
-    kill_existing_openvpn_processes()
+    if VPN_BACKEND == "softether":
+        softether_backend.start()
+    else:
+        kill_existing_openvpn_processes()
     
     log_file = DATA_DIR / "vpngate.log"
     tee = Tee(str(log_file))
@@ -7333,6 +7363,14 @@ def main() -> None:
     else:
         print("[警告] 代理网关启动超时，继续执行脚本...", flush=True)
 
+    if VPN_BACKEND == "softether":
+        ui_cfg = load_ui_config()
+        initial_node = ui_cfg.get("last_native_node_id", "")
+        if ui_cfg.get("connection_enabled", True) and initial_node:
+            try:
+                connect_node(str(initial_node))
+            except Exception as exc:
+                log_to_json("WARNING", "VPN", f"恢复上次 SoftEther 节点失败: {exc}")
     threading.Thread(target=collector_loop, daemon=True).start()
     threading.Thread(target=ip_enrichment_loop, daemon=True).start()
     threading.Thread(target=background_proxy_checker, daemon=True).start()

@@ -8,3 +8,8 @@ build
 tests
 scratch
 _site
+.env
+data
+.agents
+.aws
+.codex

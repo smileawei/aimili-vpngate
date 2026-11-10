@@ -1,12 +1,17 @@
+name: vpngate2proxy
+
+include:
+  - compose.native.yaml
+
 services:
   aimilivpn:
-    image: ghcr.io/baoweise-bot/aimili-vpngate:2.1
+    profiles:
+      - legacy-openvpn
+    image: aimili-vpngate:2.1.5-local
     build:
       context: .
       args:
-        BUILD_VERSION: local
-    container_name: aimilivpn
-    network_mode: host
+        BUILD_VERSION: "2.1.5"
     cap_drop:
       - ALL
     cap_add:
@@ -21,12 +26,19 @@ services:
       UI_PORT: "8787"
       LOCAL_PROXY_HOST: "127.0.0.1"
       LOCAL_PROXY_PORT: "7928"
+      CHECK_INTERVAL_SECONDS: "1260"
+      TARGET_VALID_NODES: "3"
+      PROXY_FAILURE_THRESHOLD: "3"
+    ports:
+      - "${UI_BIND_HOST:-0.0.0.0}:${UI_PORT:-8787}:8787"
     volumes:
-      - aimilivpn-data:/data
+      - ./data:/data
     init: true
     security_opt:
       - no-new-privileges:true
     restart: unless-stopped
-
-volumes:
-  aimilivpn-data:
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"

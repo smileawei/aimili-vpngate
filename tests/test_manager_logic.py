@@ -1127,5 +1127,26 @@ class ProxyServerConcurrencyTests(unittest.TestCase):
         self.assertEqual([("first", "first"), ("second", "second")], seen)
 
 
+class WebAccessModeTests(unittest.TestCase):
+    def test_authentication_is_required_by_default(self):
+        handler = object.__new__(manager.Handler)
+        handler.headers = {}
+        with mock.patch.object(manager, "load_ui_config", return_value={"password": "test-password"}):
+            self.assertFalse(handler.is_authorized())
+
+    def test_explicit_disabled_auth_allows_requests_without_cookie(self):
+        handler = object.__new__(manager.Handler)
+        handler.headers = {}
+        with mock.patch.object(manager, "load_ui_config", return_value={"auth_enabled": False}):
+            self.assertTrue(handler.is_authorized())
+
+    def test_empty_secret_path_allows_root_and_api(self):
+        handler = object.__new__(manager.Handler)
+        with mock.patch.object(manager, "load_ui_config", return_value={"secret_path": ""}):
+            for path in ("/", "/api/nodes", "/api/logs?limit=10"):
+                handler.path = path
+                self.assertEqual(path.split("?")[0], handler.validate_path())
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -66,3 +66,15 @@ test_*.py
 .DS_Store
 Thumbs.db
 Desktop.ini
+
+# Local Compose deployment state and credentials
+.env
+data/
+
+# Local agent settings
+.agents/
+.aws/
+.codex/
+
+# Keep regression tests under version control
+!tests/test_*.py
