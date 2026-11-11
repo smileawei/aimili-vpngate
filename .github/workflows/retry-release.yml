@@ -1,0 +1,33 @@
+name: Retry tagged release
+
+on:
+  push:
+    branches: [main]
+    paths: [.github/workflows/retry-release.yml]
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Existing tag to publish using the current main workflow
+        required: false
+        type: string
+
+permissions:
+  contents: read
+  actions: write
+
+jobs:
+  dispatch:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - name: Retry release without changing its immutable tag
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REQUESTED_TAG: ${{ inputs.release_tag }}
+        run: |
+          tag="${REQUESTED_TAG:-v$(tr -d '\r\n' < VERSION)}"
+          [[ "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || exit 1
+          gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$tag" >/dev/null
+          gh workflow run release.yml --ref main -f "release_tag=$tag"
+          echo "Dispatched release.yml from main for $tag" >> "$GITHUB_STEP_SUMMARY"
