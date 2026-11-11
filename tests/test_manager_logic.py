@@ -882,6 +882,30 @@ class ManagerLogicTests(unittest.TestCase):
             args=call.args[0]
             self.assertEqual('3', args[args.index('--max-time')+1])
 
+    def test_standby_status_exposes_current_health_without_config(self):
+        hot, _ = self.make_hot_spare()
+        hot.slot['node']['config_text'] = 'private VPN configuration'
+        status = hot.status(manager.load_ui_config())
+        self.assertEqual('ready', status['standby_status'])
+        self.assertTrue(status['standby_ready'])
+        self.assertNotIn('config_text', status['standby_node'])
+        hot.slot['verified'] -= 10
+        status = hot.status(manager.load_ui_config())
+        self.assertEqual('checking', status['standby_status'])
+        self.assertFalse(status['standby_ready'])
+
+    def test_standby_status_distinguishes_building_and_disabled(self):
+        hot, _ = self.make_hot_spare()
+        hot.building_node = hot.slot['node']
+        hot.slot = None
+        status = hot.status(manager.load_ui_config())
+        self.assertEqual('building', status['standby_status'])
+        self.assertEqual('node-1', status['standby_node_id'])
+        status = hot.status({'connection_enabled': False})
+        self.assertEqual('disabled', status['standby_status'])
+        self.assertIsNone(status['standby_node'])
+        self.assertEqual('', status['standby_node_id'])
+
     def test_proxy_failures_reset_when_node_changes(self) -> None:
         self.assertEqual(1, manager.record_proxy_failure("node-a"))
         self.assertEqual(2, manager.record_proxy_failure("node-a"))

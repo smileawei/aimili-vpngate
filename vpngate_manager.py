@@ -548,6 +548,8 @@ def get_state() -> dict[str, Any]:
     state["favorite_node_ids"] = ui_cfg.get("favorite_node_ids", [])
     state["discovery_countries"] = normalize_discovery_countries(ui_cfg.get("discovery_countries"))
     state["fav_fail_fallback"] = False
+    if hot_standby is not None:
+        state.update(hot_standby.status(ui_cfg))
     
     return state
 
@@ -4209,6 +4211,33 @@ INDEX_HTML = r"""<!doctype html>
         scroll-behavior: auto !important;
       }
     }
+    .brand { min-width: 0; }
+    .status { flex-wrap: wrap; overflow-wrap: anywhere; }
+    .status-dot { flex-shrink: 0; }
+    .connection-overview { margin-bottom: 24px; }
+    .connection-heading { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin: 0 0 12px; }
+    .connection-heading h2 { margin: 0; font-size: 17px; color: var(--text-primary); }
+    .connection-pair { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 16px; }
+    .connection-pair.single { grid-template-columns: minmax(0, 1fr); }
+    .connection-pair > section { min-width: 0; }
+    .connection-pair .active-card { height: 100%; min-height: 228px; padding: 22px; flex-direction: column; align-items: stretch; gap: 16px; border-top: 3px solid #34d399; }
+    .connection-pair .active-card-info { flex-wrap: nowrap; align-items: flex-start; gap: 14px; }
+    .connection-pair .active-card-details { min-width: 0; flex: 1; }
+    .connection-pair .active-card-title { flex-wrap: wrap; letter-spacing: 0; }
+    .connection-pair .active-card-value { overflow-wrap: anywhere; }
+    .connection-pair .active-card-meta { gap: 8px 16px; }
+    .connection-pair .active-card-meta > span { margin-left: 0 !important; }
+    .connection-pair .active-card > button { align-self: flex-end; }
+    .connection-pair .standby-card { border-color: rgba(56,189,248,.3); border-top-color: #38bdf8; background: linear-gradient(135deg,rgba(14,165,233,.12),rgba(14,165,233,.025)); box-shadow: none; }
+    .role-label { font-size: 12px; font-weight: 700; letter-spacing: 1px; color: var(--text-secondary); margin-bottom: 4px; }
+    .role-note { font-size: 13px; color: var(--text-secondary); line-height: 1.6; margin-top: 8px; }
+    .badge.standby { color: #7dd3fc; background: rgba(14,165,233,.14); border-color: rgba(56,189,248,.35); }
+    .standby-row { background: rgba(14,165,233,.06) !important; }
+    .standby-row td { border-top: 1px solid rgba(56,189,248,.2); border-bottom: 1px solid rgba(56,189,248,.2); }
+    .protection-status { font-size: 12px; padding: 5px 10px; border-radius: 20px; background: rgba(16,185,129,.12); color: #6ee7b7; }
+    .protection-status.pending { background: rgba(245,158,11,.1); color: #fbbf24; }
+    @media (max-width: 850px) { .connection-pair { grid-template-columns: minmax(0, 1fr); } .connection-pair .active-card { min-height: 0; } }
+    @media (max-width: 480px) { .connection-heading { align-items: flex-start; flex-direction: column; } .connection-pair .active-card { padding: 16px; } }
   </style>
 </head>
 <body>
@@ -4283,12 +4312,13 @@ INDEX_HTML = r"""<!doctype html>
 </header>
 <main>
   
-    <!-- 当前连接活动节点卡片 -->
-    <section class="active-node-section" id="active_node_card" style="margin-bottom: 24px;">
-      <!-- Rendered dynamically by render() -->
+    <section class="connection-overview" aria-label="主备连接状态">
+      <div class="connection-heading"><h2>主备连接状态</h2><span id="protection_status" class="protection-status pending" role="status">正在读取连接状态</span></div>
+      <div id="connection_pair" class="connection-pair">
+        <section id="active_node_card" aria-label="主用节点"></section>
+        <section id="standby_node_card" aria-label="热备节点"></section>
+      </div>
     </section>
-
-
 
   <section class="toolbar">
     <select id="status_filter">
@@ -5045,6 +5075,8 @@ function getFilteredNodes() {
 function stableSortNodes() {
   nodes.sort((a, b) => {
     if (!a || !b) return 0;
+    const roleRank = n => n.id === state.active_openvpn_node_id ? 0 : (n.id === state.standby_node_id ? 1 : 2);
+    if (roleRank(a) !== roleRank(b)) return roleRank(a) - roleRank(b);
     const aScore = a.score || 0;
     const bScore = b.score || 0;
     if (bScore !== aScore) {
@@ -5065,7 +5097,7 @@ function render(){
     $("deployment_mode_label").textContent = `${modeLabel}部署 · ${state.vpn_protocol || "OpenVPN"}${state.vpn_backend === "softether" ? (state.routing_mode === "fixed_ip" ? " · 热备停用" : (state.standby_ready ? " · 热备就绪" : " · 热备准备中")) : ""} · 更新通道：main`;
   }
 
-  const activeNode = nodes.find(n => n && n.active);
+  const activeNode = nodes.find(n => n && n.active) || nodes.find(n => n && n.id === state.active_openvpn_node_id);
   
   // Render separated Active Node Card
   const activeCardContainer = $("active_node_card");
@@ -5106,7 +5138,7 @@ function render(){
           </div>
           <div class="active-card-details">
             <div class="active-card-title">
-              <span class="badge available"><span class="badge-pulse"></span>已连接</span>
+              <span class="badge ${state.proxy_ok ? "available" : "testing"}"><span class="badge-pulse"></span>${state.proxy_ok ? "主用 · 正在使用" : "主用 · 出口复核中"}</span>
               <strong>${declaredFlag ? `${esc(declaredFlag)} ` : ""}${esc(translateCountry(activeNode.country))} 节点</strong>
             </div>
             <div class="active-card-value mono" style="font-size: 20px; margin-top: 2px;">
@@ -5145,7 +5177,40 @@ function render(){
       </div>
     `;
   }
+  activeCardHtml = activeCardHtml.replace('<div class="active-card-details">', '<div class="active-card-details"><div class="role-label">主用节点 · 当前流量出口</div>');
   setHtmlIfChanged(activeCardContainer, activeCardHtml);
+  const standbyNode = state.standby_node || nodes.find(n => n && n.id === state.standby_node_id);
+  const hasStandby = state.vpn_backend === "softether";
+  const standbyDisabled = !state.connection_enabled || state.routing_mode === "fixed_ip";
+  const standbyStatus = standbyDisabled ? "disabled" : (state.standby_status || (state.standby_ready ? "ready" : "waiting"));
+  const standbyLabels = {ready: "热备已就绪", checking: "正在复核", building: "正在建立热备", waiting: "正在寻找热备", disabled: "热备已停用"};
+  $("standby_node_card").hidden = !hasStandby;
+  $("connection_pair").classList.toggle("single", !hasStandby);
+  const protectionReady = Boolean(activeNode && state.proxy_ok && standbyStatus === "ready");
+  const protectionLabel = !hasStandby ? "单节点运行" : (standbyDisabled ? "热备已停用" : (protectionReady ? "主备双连接保护中" : "等待主备就绪"));
+  $("protection_status").textContent = protectionLabel;
+  $("protection_status").classList.toggle("pending", !protectionReady);
+  const standbyAddress = standbyNode ? `${standbyNode.ip || standbyNode.remote_host || "-"}${standbyNode.remote_port ? ":" + standbyNode.remote_port : ""}` : "尚无备用节点";
+  const standbyNote = standbyDisabled
+    ? (state.routing_mode === "fixed_ip" ? "固定 IP 模式只重连同一节点，不启用热备。" : "连接已关闭，热备随主连接停用。")
+    : (standbyStatus === "ready" ? "连接和出口已验证，主节点故障时自动接替。" : (standbyStatus === "checking" ? "正在复核备用出口，确认健康后才能接替。" : "系统正在后台准备可用的备用连接。"));
+  setHtmlIfChanged($("standby_node_card"), `
+    <div class="active-card standby-card">
+      <div class="active-card-info">
+        <div class="stat-icon-wrapper" style="width:48px;height:48px;border-radius:12px;background:rgba(14,165,233,.12);color:#7dd3fc;flex-shrink:0;">
+          <svg width="25" height="25" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M12 3 3 7v5c0 5 9 9 9 9s9-4 9-9V7l-9-4Z"/><path d="m8 12 3 3 5-6"/></svg>
+        </div>
+        <div class="active-card-details">
+          <div class="role-label">热备节点 · 故障时接替</div>
+          <div class="active-card-title"><span class="badge ${standbyStatus === "ready" ? "standby" : "testing"}">${esc(standbyLabels[standbyStatus] || "正在准备")}</span>
+            <strong>${standbyNode && !standbyDisabled ? esc(translateCountry(standbyNode.country)) : "备用连接"}</strong></div>
+          <div class="active-card-value mono" style="font-size:20px;">${esc(standbyDisabled ? "未启用" : standbyAddress)}</div>
+          ${standbyNode && !standbyDisabled ? `<div class="active-card-meta"><span>运营主体: <strong>${esc(standbyNode.owner || standbyNode.as_name || "-")}</strong></span><span>IP 类型: <strong>${esc(translateIpType(standbyNode.ip_type))}</strong></span>${state.standby_latency_ms != null ? `<span>出口延时: <strong>${esc(state.standby_latency_ms)} ms</strong></span>` : ""}</div>` : ""}
+          <div class="role-note">${esc(standbyNote)}</div>
+        </div>
+      </div>
+    </div>`);
+
 
   const shown = getFilteredNodes();
   
@@ -5153,10 +5218,10 @@ function render(){
   if ($("target")) $("target").textContent = state.target_valid_nodes || 3;
   if ($("active")) $("active").textContent = activeNode ? 1 : 0; 
   
-  const statusMessage = state.last_check_message || "";
-  const activeNodeInfo = activeNode ? `<span class="badge available" style="margin-left:8px; padding:2px 8px;">${esc(translateCountry(activeNode.country))} (${esc(activeNode.id)})</span>` : `<span class="badge unavailable" style="margin-left:8px; padding:2px 8px;">无</span>`;
   const localProxy = state.local_proxy || `http://127.0.0.1:${state.proxy_port || 7928}`;
-  if ($("status")) { $("status").innerHTML=`<span class="status-dot"></span>HTTP 代理本地接口：${esc(localProxy)} | 活动节点：${activeNodeInfo} | 状态：${esc(statusMessage)}`; }
+  const connectionLabel = state.is_connecting ? "正在切换连接" : (state.proxy_ok ? "代理出口正常" : (activeNode ? "正在检查出口" : "尚未连接"));
+  const statusMessage = state.last_check_message || "";
+  if ($("status")) { $("status").innerHTML=`<span class="status-dot"></span><span>代理入口：${esc(localProxy)}</span><span title="${esc(statusMessage)}">· ${esc(connectionLabel)}</span>`; }
   
   // Update proxy test status card based on background checks
   const pBadge = $("proxy_status_badge");
@@ -5229,10 +5294,11 @@ function render(){
       if (!n) return '';
       const isCurrentlyActive = activeNode && n.id === activeNode.id;
       const isPending = Boolean(state.is_connecting && state.pending_node_id === n.id);
-      const rowClass = isCurrentlyActive ? 'class="active-row"' : '';
+      const isStandby = Boolean(!standbyDisabled && !isCurrentlyActive && state.standby_node_id === n.id);
+      const rowClass = isCurrentlyActive ? 'class="active-row"' : (isStandby ? 'class="standby-row"' : '');
       
-      const badgeClass = isCurrentlyActive ? 'available' : (isPending ? 'testing' : (n.probe_status || 'not_checked'));
-      const badgeText = isCurrentlyActive ? '<span class="badge-pulse"></span>已连接' : (isPending ? '<span class="badge-pulse"></span>切换中' : translateStatus(n.probe_status));
+      const badgeClass = isCurrentlyActive ? (state.proxy_ok ? 'available' : 'testing') : (isStandby ? 'standby' : (isPending ? 'testing' : (n.probe_status || 'not_checked')));
+      const badgeText = isCurrentlyActive ? '主用节点' : (isStandby ? (state.standby_ready ? '热备就绪' : '热备准备中') : (isPending ? '切换中' : translateStatus(n.probe_status)));
       const latencyText = nodeLatencyHtml(n);
       const displayLocation = n.location || translateCountry(n.country) || "-";
       const flag = countryFlag(n.geo_country_short || n.country_short);
@@ -5250,8 +5316,8 @@ function render(){
       // Connect button is disabled if probe status is "unavailable" and not already active, or if we are already connecting
       const isUnavailable = n.probe_status === "unavailable";
       const connectBtn = isCurrentlyActive 
-        ? `<button class="connect-btn" disabled style="background: var(--success-gradient); color: white; cursor: default; opacity: 1;">已连接</button>`
-        : `<button class="connect-btn" ${(isUnavailable || isTesting || state.is_connecting) ? 'disabled style="opacity:0.3; cursor:not-allowed;"' : ''} onclick="connectNode('${esc(n.id)}')">${isPending ? '切换中' : '切换'}</button>`;
+        ? `<button class="connect-btn" disabled style="background: var(--success-gradient); color: white; cursor: default; opacity: 1;">主用中</button>`
+        : `<button class="connect-btn" ${(isUnavailable || isTesting || state.is_connecting) ? 'disabled style="opacity:0.3; cursor:not-allowed;"' : ''} onclick="connectNode('${esc(n.id)}')">${isPending ? '切换中' : (isStandby ? '切为主用' : '切换')}</button>`;
       
       const favoriteIds = Array.isArray(state.favorite_node_ids) ? state.favorite_node_ids : [];
       const isFav = favoriteIds.includes(n.id);

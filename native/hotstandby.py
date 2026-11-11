@@ -12,6 +12,23 @@ class HotStandby:
         self.slot = None
         self.cancel = threading.Event()
         self.cooldown = {}
+        self.building_node = None
+
+    def status(self, cfg):
+        # UI reads a snapshot without taking the standby lock: callers may
+        # already hold the manager lock used by the worker's state writes.
+        slot = self.slot
+        node = slot['node'] if slot else self.building_node
+        disabled = not cfg.get('connection_enabled', True) or cfg.get('routing_mode') == 'fixed_ip'
+        age = max(0, int(time.monotonic()-slot['verified'])) if slot else None
+        ready = bool(slot and not disabled and time.monotonic()-slot['verified'] <= 5)
+        status = 'disabled' if disabled else ('ready' if ready else ('checking' if slot else ('building' if node else 'waiting')))
+        fields = ('id', 'ip', 'remote_host', 'remote_port', 'country', 'country_short', 'location', 'owner', 'as_name', 'ip_type')
+        return dict(standby_status=status, standby_ready=ready,
+                    standby_node_id=node['id'] if node and not disabled else '',
+                    standby_node={k: node.get(k) for k in fields} if node and not disabled else None,
+                    standby_latency_ms=slot.get('latency_ms') if slot and not disabled else None,
+                    standby_verified_seconds=age if not disabled else None)
 
     def dispose(self, slot):
         if slot:
@@ -86,6 +103,7 @@ class HotStandby:
             return
         node = candidates[0]
         index = self.m.get_free_test_index()
+        self.building_node = node
         with self.lock:
             self.cancel = threading.Event()
             cancel = self.cancel
@@ -109,6 +127,7 @@ class HotStandby:
             self.m.set_state(standby_node_id=node['id'], standby_ready=True)
             self.m.log_to_json('INFO', 'VPN', f"热备就绪: {node['id']}")
         finally:
+            self.building_node = None
             path.unlink(missing_ok=True)
             with self.lock:
                 retained = self.slot is not None and self.slot['index'] == index
