@@ -2756,7 +2756,7 @@ LOGIN_HTML = r"""<!DOCTYPE html>
       --bg-dark: #090d16;
       --bg-surface: rgba(15, 23, 42, 0.96);
       --border-color: rgba(255, 255, 255, 0.08);
-      --text-primary: #f8fafc;
+      --text-primary: var(--option-text);
       --text-secondary: #94a3b8;
       --primary: #6366f1;
       --primary-gradient: linear-gradient(135deg, #6366f1 0%, #4f46e5 100%);
@@ -2862,7 +2862,7 @@ LOGIN_HTML = r"""<!DOCTYPE html>
     .input-field {
       width: 100%;
       height: 48px;
-      background: rgba(255, 255, 255, 0.03);
+      background: var(--input-bg);
       border: 1px solid var(--border-color);
       border-radius: 10px;
       padding: 0 16px;
@@ -2877,7 +2877,7 @@ LOGIN_HTML = r"""<!DOCTYPE html>
     .input-field:focus {
       border-color: var(--primary);
       box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.2);
-      background: rgba(15, 23, 42, 0.6);
+      background: var(--input-focus-bg);
     }
 
     .error-message {
@@ -2942,7 +2942,7 @@ LOGIN_HTML = r"""<!DOCTYPE html>
           <path stroke-linecap="round" stroke-linejoin="round" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" />
         </svg>
       </div>
-      <h2 class="login-title">AimiliVPN</h2>
+      <h2 class="login-title">AimiliVPN</h2><span class="theme-mode-label" data-theme-label></span>
       <p class="login-subtitle">请输入您的管理账号和安全密码以继续</p>
       
       <form id="login_form" onsubmit="handleLogin(event)">
@@ -3039,11 +3039,11 @@ INDEX_HTML = r"""<!doctype html>
       --primary-gradient: linear-gradient(135deg, #6366f1 0%, #4f46e5 100%);
       --primary-hover: linear-gradient(135deg, #4f46e5 0%, #3730a3 100%);
       --success: #10b981;
-      --success-gradient: linear-gradient(135deg, #34d399 0%, #059669 100%);
+      --success-gradient: linear-gradient(135deg, var(--success-text) 0%, #059669 100%);
       --danger: #f43f5e;
-      --danger-gradient: linear-gradient(135deg, #fb7185 0%, #e11d48 100%);
+      --danger-gradient: linear-gradient(135deg, var(--danger-text) 0%, #e11d48 100%);
       --warning: #f59e0b;
-      --warning-gradient: linear-gradient(135deg, #fbbf24 0%, #d97706 100%);
+      --warning-gradient: linear-gradient(135deg, var(--warning-text) 0%, #d97706 100%);
       --active-row-bg: rgba(16, 185, 129, 0.06);
       --active-row-border: rgba(16, 185, 129, 0.25);
     }
@@ -3063,7 +3063,7 @@ INDEX_HTML = r"""<!doctype html>
 
     header {
       padding: 16px 32px;
-      background: rgba(11, 15, 25, 0.97);
+      background: var(--header-bg);
       border-bottom: 1px solid var(--border-color);
       display: flex;
       justify-content: space-between;
@@ -3083,7 +3083,7 @@ INDEX_HTML = r"""<!doctype html>
       font-size: 20px;
       font-weight: 700;
       margin: 0;
-      background: linear-gradient(135deg, #a5b4fc 0%, #6366f1 100%);
+      background: linear-gradient(135deg, var(--accent-text) 0%, #6366f1 100%);
       -webkit-background-clip: text;
       -webkit-text-fill-color: transparent;
       letter-spacing: -0.5px;
@@ -3224,7 +3224,7 @@ INDEX_HTML = r"""<!doctype html>
       font-weight: 700;
       text-transform: uppercase;
       letter-spacing: 1px;
-      color: #a5b4fc;
+      color: var(--accent-text);
       display: flex;
       align-items: center;
       gap: 8px;
@@ -3428,7 +3428,7 @@ INDEX_HTML = r"""<!doctype html>
     
     .tag-normal {
       background: rgba(99, 102, 241, 0.15);
-      color: #a5b4fc;
+      color: var(--accent-text);
       border: 1px solid rgba(99, 102, 241, 0.2);
     }
     
@@ -3475,14 +3475,14 @@ INDEX_HTML = r"""<!doctype html>
     }
     
     .forum-link {
-      color: #818cf8;
+      color: var(--accent-text);
       font-weight: 700;
       text-decoration: none;
       transition: color 0.2s ease;
     }
     
     .forum-link:hover {
-      color: #a5b4fc;
+      color: var(--accent-text);
       text-decoration: underline;
     }
 
@@ -3503,7 +3503,7 @@ INDEX_HTML = r"""<!doctype html>
     .toolbar select {
       width: 180px;
       height: 42px;
-      background: rgba(255, 255, 255, 0.03);
+      background: var(--input-bg);
       border: 1px solid var(--border-color);
       border-radius: 8px;
       padding: 0 12px;
@@ -3518,14 +3518,14 @@ INDEX_HTML = r"""<!doctype html>
     .toolbar select:focus {
       border-color: var(--primary);
       box-shadow: 0 0 0 2px rgba(99, 102, 241, 0.2);
-      background: #0f172a;
+      background: var(--option-bg);
     }
 
     .toolbar > input {
       flex: 1;
       min-width: 250px;
       height: 42px;
-      background: rgba(255, 255, 255, 0.03);
+      background: var(--input-bg);
       border: 1px solid var(--border-color);
       border-radius: 8px;
       padding: 0 16px;
@@ -3539,7 +3539,7 @@ INDEX_HTML = r"""<!doctype html>
       outline: none;
       border-color: var(--primary);
       box-shadow: 0 0 0 2px rgba(99, 102, 241, 0.2);
-      background: rgba(15, 23, 42, 0.8);
+      background: var(--input-focus-bg);
     }
 
     .country-filter {
@@ -3556,7 +3556,7 @@ INDEX_HTML = r"""<!doctype html>
       justify-content: space-between;
       gap: 10px;
       padding: 0 12px;
-      background: rgba(255, 255, 255, 0.03);
+      background: var(--input-bg);
       border: 1px solid var(--border-color);
       border-radius: 8px;
       color: var(--text-primary);
@@ -3568,7 +3568,7 @@ INDEX_HTML = r"""<!doctype html>
     .country-filter-button:hover,
     .country-filter-button[aria-expanded="true"] {
       border-color: var(--primary);
-      background: rgba(15, 23, 42, 0.8);
+      background: var(--input-focus-bg);
     }
 
     .country-filter-button:focus-visible {
@@ -3597,7 +3597,7 @@ INDEX_HTML = r"""<!doctype html>
       display: flex;
       flex-direction: column;
       overflow: hidden;
-      background: rgba(15, 23, 42, 0.98);
+      background: var(--menu-bg);
       border: 1px solid var(--border-color);
       border-radius: 8px;
       box-shadow: 0 18px 40px rgba(0, 0, 0, 0.45);
@@ -3646,7 +3646,7 @@ INDEX_HTML = r"""<!doctype html>
       justify-content: center;
       border: 1px solid rgba(148, 163, 184, 0.7);
       border-radius: 4px;
-      background: rgba(255, 255, 255, 0.03);
+      background: var(--input-bg);
       color: white;
       font-size: 12px;
       line-height: 1;
@@ -3662,7 +3662,7 @@ INDEX_HTML = r"""<!doctype html>
     }
 
     .country-option-input:focus-visible + .country-option-box {
-      outline: 2px solid #a5b4fc;
+      outline: 2px solid var(--accent-text);
       outline-offset: 2px;
     }
 
@@ -3695,7 +3695,7 @@ INDEX_HTML = r"""<!doctype html>
       border: 0;
       border-radius: 6px;
       background: transparent;
-      color: #a5b4fc;
+      color: var(--accent-text);
       font: inherit;
       font-size: 13px;
       cursor: pointer;
@@ -3800,31 +3800,31 @@ INDEX_HTML = r"""<!doctype html>
 
     .available {
       background: rgba(16, 185, 129, 0.1);
-      color: #34d399;
+      color: var(--success-text);
       border-color: rgba(16, 185, 129, 0.2);
     }
 
     .unavailable {
       background: rgba(244, 63, 94, 0.1);
-      color: #fb7185;
+      color: var(--danger-text);
       border-color: rgba(244, 63, 94, 0.2);
     }
 
     .not_checked {
       background: rgba(245, 158, 11, 0.1);
-      color: #fbbf24;
+      color: var(--warning-text);
       border-color: rgba(245, 158, 11, 0.2);
     }
 
     .testing {
       background: rgba(59, 130, 246, 0.12);
-      color: #93c5fd;
+      color: var(--info-text);
       border-color: rgba(59, 130, 246, 0.24);
     }
 
     .current-badge {
       background: rgba(99, 102, 241, 0.15);
-      color: #818cf8;
+      color: var(--accent-text);
       border-color: rgba(99, 102, 241, 0.3);
     }
 
@@ -3837,7 +3837,7 @@ INDEX_HTML = r"""<!doctype html>
 
     .connect-btn {
       background: transparent;
-      color: #818cf8;
+      color: var(--accent-text);
       border: 1px solid rgba(99, 102, 241, 0.4);
       border-radius: 6px;
       padding: 0 12px;
@@ -3862,7 +3862,7 @@ INDEX_HTML = r"""<!doctype html>
 
     .test-btn {
       background: transparent;
-      color: #34d399;
+      color: var(--success-text);
       border: 1px solid rgba(16, 185, 129, 0.4);
       border-radius: 6px;
       padding: 0 12px;
@@ -3888,7 +3888,7 @@ INDEX_HTML = r"""<!doctype html>
     .mono {
       font-family: 'JetBrains Mono', Consolas, monospace;
       font-size: 13px;
-      color: #e2e8f0;
+      color: var(--text-primary);
     }
 
     .latency-val {
@@ -3900,17 +3900,17 @@ INDEX_HTML = r"""<!doctype html>
 
     .latency-good {
       background: rgba(16, 185, 129, 0.1);
-      color: #34d399;
+      color: var(--success-text);
     }
     
     .latency-medium {
       background: rgba(245, 158, 11, 0.1);
-      color: #fbbf24;
+      color: var(--warning-text);
     }
     
     .latency-poor {
       background: rgba(244, 63, 94, 0.1);
-      color: #fb7185;
+      color: var(--danger-text);
     }
 
     .latency-estimated {
@@ -3990,7 +3990,7 @@ INDEX_HTML = r"""<!doctype html>
       right: 0;
       margin-top: 6px;
       min-width: 140px;
-      background: rgba(22, 30, 49, 0.99);
+      background: var(--panel-bg);
       border: 1px solid var(--border-color);
       border-radius: 8px;
       box-shadow: 0 10px 25px rgba(0,0,0,0.5);
@@ -4059,17 +4059,17 @@ INDEX_HTML = r"""<!doctype html>
     }
     .update-check-status.available {
       border-color: rgba(245, 158, 11, 0.35);
-      color: #fbbf24;
+      color: var(--warning-text);
       background: rgba(245, 158, 11, 0.08);
     }
     .update-check-status.current {
       border-color: rgba(16, 185, 129, 0.3);
-      color: #34d399;
+      color: var(--success-text);
       background: rgba(16, 185, 129, 0.08);
     }
     .update-check-status.error {
       border-color: rgba(244, 63, 94, 0.3);
-      color: #fb7185;
+      color: var(--danger-text);
       background: rgba(244, 63, 94, 0.08);
     }
     
@@ -4090,7 +4090,7 @@ INDEX_HTML = r"""<!doctype html>
       justify-content: center;
     }
     .modal-content {
-      background: rgba(22, 30, 49, 0.99);
+      background: var(--panel-bg);
       border: 1px solid var(--border-color);
       border-radius: 20px;
       width: 90%;
@@ -4126,7 +4126,7 @@ INDEX_HTML = r"""<!doctype html>
     .input-field {
       width: 100%;
       height: 40px;
-      background: rgba(255, 255, 255, 0.03);
+      background: var(--input-bg);
       border: 1px solid var(--border-color);
       border-radius: 8px;
       padding: 0 12px;
@@ -4140,11 +4140,11 @@ INDEX_HTML = r"""<!doctype html>
     .input-field:focus {
       border-color: var(--primary);
       box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.2);
-      background: rgba(15, 23, 42, 0.6);
+      background: var(--input-focus-bg);
     }
     select option {
-      background-color: #0f172a;
-      color: #f8fafc;
+      background-color: var(--option-bg);
+      color: var(--option-text);
     }
     
     /* Option Card Styles for Proxy/Routing Settings */
@@ -4220,7 +4220,7 @@ INDEX_HTML = r"""<!doctype html>
     .connection-pair { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 16px; }
     .connection-pair.single { grid-template-columns: minmax(0, 1fr); }
     .connection-pair > section { min-width: 0; }
-    .connection-pair .active-card { height: 100%; min-height: 228px; padding: 22px; flex-direction: column; align-items: stretch; gap: 16px; border-top: 3px solid #34d399; }
+    .connection-pair .active-card { height: 100%; min-height: 228px; padding: 22px; flex-direction: column; align-items: stretch; gap: 16px; border-top: 3px solid var(--success-text); }
     .connection-pair .active-card-info { flex-wrap: nowrap; align-items: flex-start; gap: 14px; }
     .connection-pair .active-card-details { min-width: 0; flex: 1; }
     .connection-pair .active-card-title { flex-wrap: wrap; letter-spacing: 0; }
@@ -4228,14 +4228,14 @@ INDEX_HTML = r"""<!doctype html>
     .connection-pair .active-card-meta { gap: 8px 16px; }
     .connection-pair .active-card-meta > span { margin-left: 0 !important; }
     .connection-pair .active-card > button { align-self: flex-end; }
-    .connection-pair .standby-card { border-color: rgba(56,189,248,.3); border-top-color: #38bdf8; background: linear-gradient(135deg,rgba(14,165,233,.12),rgba(14,165,233,.025)); box-shadow: none; }
+    .connection-pair .standby-card { border-color: rgba(56,189,248,.3); border-top-color: var(--standby-text); background: linear-gradient(135deg,rgba(14,165,233,.12),rgba(14,165,233,.025)); box-shadow: none; }
     .role-label { font-size: 12px; font-weight: 700; letter-spacing: 1px; color: var(--text-secondary); margin-bottom: 4px; }
     .role-note { font-size: 13px; color: var(--text-secondary); line-height: 1.6; margin-top: 8px; }
-    .badge.standby { color: #7dd3fc; background: rgba(14,165,233,.14); border-color: rgba(56,189,248,.35); }
+    .badge.standby { color: var(--standby-text); background: rgba(14,165,233,.14); border-color: rgba(56,189,248,.35); }
     .standby-row { background: rgba(14,165,233,.06) !important; }
     .standby-row td { border-top: 1px solid rgba(56,189,248,.2); border-bottom: 1px solid rgba(56,189,248,.2); }
     .protection-status { font-size: 12px; padding: 5px 10px; border-radius: 20px; background: rgba(16,185,129,.12); color: #6ee7b7; }
-    .protection-status.pending { background: rgba(245,158,11,.1); color: #fbbf24; }
+    .protection-status.pending { background: rgba(245,158,11,.1); color: var(--warning-text); }
     @media (max-width: 850px) { .connection-pair { grid-template-columns: minmax(0, 1fr); } .connection-pair .active-card { min-height: 0; } }
     @media (max-width: 480px) { .connection-heading { align-items: flex-start; flex-direction: column; } .connection-pair .active-card { padding: 16px; } }
   </style>
@@ -4244,10 +4244,10 @@ INDEX_HTML = r"""<!doctype html>
 <header>
   <div class="brand">
     <h1>
-      <svg xmlns="http://www.w3.org/2000/svg" style="width:24px; height:24px; color:#818cf8;" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5"><path stroke-linecap="round" stroke-linejoin="round" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z" /></svg>
+      <svg xmlns="http://www.w3.org/2000/svg" style="width:24px; height:24px; color:var(--accent-text);" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5"><path stroke-linecap="round" stroke-linejoin="round" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z" /></svg>
       AimiliVPN 节点管理系统
     </h1>
-    <div id="status" class="status" role="status" aria-live="polite"><span class="status-dot"></span>服务加载中...</div>
+    <div id="status" class="status" role="status" aria-live="polite"><span class="status-dot"></span>服务加载中...</div><span class="theme-mode-label" data-theme-label></span>
   </div>
   <div class="btn-group">
 
@@ -4509,7 +4509,7 @@ INDEX_HTML = r"""<!doctype html>
           
           <div id="net_force_country_group" class="form-group" style="margin-bottom: 16px; display: none;">
             <label class="form-label" for="net_force_country">锁定国家地区</label>
-            <select id="net_force_country" class="input-field" style="background: rgba(255, 255, 255, 0.03); border: 1px solid var(--border-color); color: var(--text-primary); outline: none; cursor: pointer; width: 100%; height: 40px; border-radius: 8px; padding: 0 12px;">
+            <select id="net_force_country" class="input-field" style="background: var(--input-bg); border: 1px solid var(--border-color); color: var(--text-primary); outline: none; cursor: pointer; width: 100%; height: 40px; border-radius: 8px; padding: 0 12px;">
               <option value="">正在加载节点国家...</option>
             </select>
           </div>
@@ -4663,7 +4663,7 @@ INDEX_HTML = r"""<!doctype html>
         
         <div style="display: flex; align-items: center; gap: 10px; margin-left: auto;">
           <label class="form-label" for="log_filter_select" style="margin: 0; font-size: 13px; color: var(--text-secondary);">日志筛选:</label>
-          <select id="log_filter_select" class="input-field" style="width: 140px; height: 32px; font-size: 12px; border-radius: 6px; padding: 0 8px; background: rgba(255, 255, 255, 0.03);" onchange="filterAndRenderLogs()">
+          <select id="log_filter_select" class="input-field" style="width: 140px; height: 32px; font-size: 12px; border-radius: 6px; padding: 0 8px; background: var(--input-bg);" onchange="filterAndRenderLogs()">
             <option value="all">全部日志</option>
             <option value="proxy">代理相关 (Proxy)</option>
             <option value="vpn">VPN 连接 (VPN)</option>
@@ -4677,7 +4677,7 @@ INDEX_HTML = r"""<!doctype html>
       </div>
 
       <!-- Terminal Log Container -->
-      <div id="log_terminal_container" style="background: #050811; border: 1px solid rgba(255, 255, 255, 0.05); border-radius: 10px; height: 400px; padding: 16px; overflow-y: auto; font-family: 'JetBrains Mono', Consolas, Courier, monospace; font-size: 12px; line-height: 1.5; text-align: left; white-space: pre-wrap; word-break: break-all; color: #a5b4fc; box-shadow: inset 0 4px 20px rgba(0,0,0,0.8); position: relative; margin-bottom: 20px;">
+      <div id="log_terminal_container" style="background: var(--terminal-bg); border: 1px solid rgba(255, 255, 255, 0.05); border-radius: 10px; height: 400px; padding: 16px; overflow-y: auto; font-family: 'JetBrains Mono', Consolas, Courier, monospace; font-size: 12px; line-height: 1.5; text-align: left; white-space: pre-wrap; word-break: break-all; color: var(--accent-text); box-shadow: inset 0 4px 20px rgba(0,0,0,0.8); position: relative; margin-bottom: 20px;">
         <div style="color: var(--text-secondary); text-align: center; margin-top: 150px;">
           暂无今日运行日志记录。
         </div>
@@ -5110,11 +5110,11 @@ function render(){
       <div class="active-card" style="background: var(--bg-surface); border-color: var(--warning); box-shadow: 0 0 15px rgba(245, 158, 11, 0.15);">
         <div class="active-card-info">
           <div class="stat-icon-wrapper" style="background: rgba(245, 158, 11, 0.15); border-color: rgba(245, 158, 11, 0.3); width: 48px; height: 48px; border-radius: 12px;">
-            <svg xmlns="http://www.w3.org/2000/svg" class="stat-icon" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5" style="color: #f59e0b; width: 24px; height: 24px; animation: spin 2s linear infinite;"><path stroke-linecap="round" stroke-linejoin="round" d="M4 4v5h.582m15.356 2A8.001 8.001 0 1121.21 8H18" /></svg>
+            <svg xmlns="http://www.w3.org/2000/svg" class="stat-icon" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5" style="color: var(--warning-text); width: 24px; height: 24px; animation: spin 2s linear infinite;"><path stroke-linecap="round" stroke-linejoin="round" d="M4 4v5h.582m15.356 2A8.001 8.001 0 1121.21 8H18" /></svg>
           </div>
           <div class="active-card-details">
             <div class="active-card-title" style="color: var(--text-primary);">
-              <span class="badge" style="background: rgba(245, 158, 11, 0.15); color: #f59e0b; border-color: rgba(245, 158, 11, 0.3);"><span class="badge-pulse" style="background: #f59e0b;"></span>${esc(busyTitle)}</span>
+              <span class="badge" style="background: rgba(245, 158, 11, 0.15); color: var(--warning-text); border-color: rgba(245, 158, 11, 0.3);"><span class="badge-pulse" style="background: #f59e0b;"></span>${esc(busyTitle)}</span>
               <strong>${esc(busyLatency)}</strong>
             </div>
             <div class="active-card-meta" style="margin-top: 4px;">
@@ -5134,7 +5134,7 @@ function render(){
       <div class="active-card">
         <div class="active-card-info">
           <div class="stat-icon-wrapper" style="background: rgba(16, 185, 129, 0.15); border-color: rgba(16, 185, 129, 0.3); width: 48px; height: 48px; border-radius: 12px;">
-            <svg xmlns="http://www.w3.org/2000/svg" class="stat-icon" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5" style="color: #34d399; width: 24px; height: 24px;"><path stroke-linecap="round" stroke-linejoin="round" d="M13 10V3L4 14h7v7l9-11h-7z" /></svg>
+            <svg xmlns="http://www.w3.org/2000/svg" class="stat-icon" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5" style="color: var(--success-text); width: 24px; height: 24px;"><path stroke-linecap="round" stroke-linejoin="round" d="M13 10V3L4 14h7v7l9-11h-7z" /></svg>
           </div>
           <div class="active-card-details">
             <div class="active-card-title">
@@ -5197,7 +5197,7 @@ function render(){
   setHtmlIfChanged($("standby_node_card"), `
     <div class="active-card standby-card">
       <div class="active-card-info">
-        <div class="stat-icon-wrapper" style="width:48px;height:48px;border-radius:12px;background:rgba(14,165,233,.12);color:#7dd3fc;flex-shrink:0;">
+        <div class="stat-icon-wrapper" style="width:48px;height:48px;border-radius:12px;background:rgba(14,165,233,.12);color:var(--standby-text);flex-shrink:0;">
           <svg width="25" height="25" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M12 3 3 7v5c0 5 9 9 9 9s9-4 9-9V7l-9-4Z"/><path d="m8 12 3 3 5-6"/></svg>
         </div>
         <div class="active-card-details">
@@ -5232,7 +5232,7 @@ function render(){
   if (state.is_connecting) {
     pBadge.className = "badge";
     pBadge.style.background = "rgba(245, 158, 11, 0.15)";
-    pBadge.style.color = "#f59e0b";
+    pBadge.style.color = "var(--warning-text)";
     pBadge.style.borderColor = "rgba(245, 158, 11, 0.3)";
     pBadge.innerHTML = `<span class="badge-pulse" style="background: #f59e0b;"></span>正在连接`;
     pIpVal.textContent = state.active_node_latency || "正在连接...";
@@ -6341,11 +6341,11 @@ function filterAndRenderLogs() {
   }
   
   const linesHtml = filtered.slice(-MAX_RENDERED_LOG_LINES).map(l => {
-    let color = "#a5b4fc";
-    if (l.module === "Proxy") color = "#38bdf8";
-    if (l.module === "VPN") color = "#34d399";
-    if (l.level === "WARNING") color = "#fbbf24";
-    if (l.level === "ERROR") color = "#f43f5e";
+    let color = "var(--accent-text)";
+    if (l.module === "Proxy") color = "var(--standby-text)";
+    if (l.module === "VPN") color = "var(--success-text)";
+    if (l.level === "WARNING") color = "var(--warning-text)";
+    if (l.level === "ERROR") color = "var(--danger-text)";
     
     return `<div style="color: ${color}; margin-bottom: 4px;">[${esc(l.timestamp)}] [${esc(l.level)}] [${esc(l.module)}] ${esc(l.message)}</div>`;
   }).join("");
@@ -6407,6 +6407,65 @@ function exportLogContent() {
 }
 </script>
 </body></html>"""
+
+AUTO_THEME_HEAD = r"""<style>
+:root {
+  color-scheme: dark;
+  --success-text: #34d399; --standby-text: #7dd3fc; --warning-text: #fbbf24;
+  --danger-text: #fb7185; --info-text: #93c5fd; --accent-text: #a5b4fc;
+  --header-bg: rgba(11,15,25,.97); --panel-bg: rgba(22,30,49,.99);
+  --input-bg: rgba(255,255,255,.03); --input-focus-bg: rgba(15,23,42,.6);
+  --menu-bg: rgba(15,23,42,.98); --option-bg: #0f172a; --option-text: #f8fafc;
+  --terminal-bg: #050811;
+}
+html[data-theme="light"] {
+  color-scheme: light;
+  --bg-dark: #ffffff; --bg-surface: #ffffff; --bg-surface-hover: #f1f5f9;
+  --text-primary: #172033; --text-secondary: #526174;
+  --border-color: #dce3ed; --border-color-hover: #818cf8;
+  --primary: #4f46e5; --success: #059669; --danger: #e11d48; --warning: #b45309;
+  --success-text: #047857; --standby-text: #0369a1; --warning-text: #92400e;
+  --danger-text: #be123c; --info-text: #1d4ed8; --accent-text: #4338ca;
+  --header-bg: rgba(255,255,255,.98); --panel-bg: #ffffff;
+  --input-bg: #f8fafc; --input-focus-bg: #ffffff;
+  --menu-bg: #ffffff; --option-bg: #ffffff; --option-text: #172033;
+  --terminal-bg: #f8fafc; --active-row-bg: #ecfdf5; --active-row-border: #a7f3d0;
+}
+html[data-theme="light"] body { background-image: none; color: var(--text-primary); }
+html[data-theme="light"] th { background: #f1f5f9; }
+html[data-theme="light"] .protection-status:not(.pending) { color: var(--success-text); }
+html[data-theme="light"] tr:hover { background: #f8fafc; }
+html[data-theme="light"] .stat strong { background: none; -webkit-text-fill-color: var(--text-primary); }
+html[data-theme="light"] .table-wrapper,
+html[data-theme="light"] .login-card,
+html[data-theme="light"] .modal-content,
+html[data-theme="light"] .dropdown-content { box-shadow: 0 8px 24px rgba(15,23,42,.07); }
+html[data-theme="light"] .modal { background-color: rgba(15,23,42,.35); }
+html[data-theme="light"] #log_terminal_container { box-shadow: inset 0 1px 3px rgba(15,23,42,.08) !important; }
+.theme-mode-label { color: var(--text-secondary); font-size: 11px; margin-top: 5px; display: inline-block; }
+</style>
+<script>
+(() => {
+  function applyClockTheme() {
+    const hour = new Date().getHours();
+    const light = hour >= 7 && hour < 19;
+    document.documentElement.dataset.theme = light ? "light" : "dark";
+    document.querySelectorAll('[data-theme-label]').forEach(label => {
+      label.textContent = light ? "☀ 日间模式 · 随本地时间" : "☾ 夜间模式 · 随本地时间";
+      label.title = "使用浏览器所在时区：07:00–19:00 日间，其余时间夜间";
+    });
+  }
+  applyClockTheme();
+  document.addEventListener('DOMContentLoaded', applyClockTheme);
+  document.addEventListener('visibilitychange', applyClockTheme);
+  window.addEventListener('focus', applyClockTheme);
+  setInterval(applyClockTheme, 60000);
+})();
+</script>
+"""
+
+LOGIN_HTML = LOGIN_HTML.replace("</head>", AUTO_THEME_HEAD + "</head>", 1)
+INDEX_HTML = INDEX_HTML.replace("</head>", AUTO_THEME_HEAD + "</head>", 1)
 
 def check_proxy_health(probe_timeout: float | None = None) -> dict[str, Any]:
     budget = probe_timeout if probe_timeout is not None else (
