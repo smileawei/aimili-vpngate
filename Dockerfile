@@ -11,7 +11,7 @@ LABEL org.opencontainers.image.title="AimiliVPN" \
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
-        ca-certificates \
+        ca-certificates tzdata \
         curl \
         iproute2 \
         iptables \

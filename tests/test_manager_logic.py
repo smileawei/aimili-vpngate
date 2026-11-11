@@ -959,6 +959,38 @@ class ManagerLogicTests(unittest.TestCase):
         handler.do_GET()
         self.assertEqual(400,handler.send_json.call_args.args[1])
 
+    def test_hot_history_keeps_last_verified_ip_across_failure(self):
+        hot, _ = self.make_hot_spare()
+        manager.set_state(proxy_ok=True,proxy_ip='203.0.113.1')
+        manager.set_state(proxy_ok=False,proxy_ip='-')
+        with mock.patch.object(manager.threading,'Thread'):
+            self.assertTrue(hot.promote())
+        import time
+        data=manager.get_switch_history_store().statistics(time.time()-5,time.time()+1)
+        self.assertEqual(1,data['counts']['confirmed'])
+        event=manager.get_switch_history_store().read(time.time()-5,time.time()+1)['entries'][0]
+        self.assertEqual('203.0.113.1',event['from_exit_ip'])
+        self.assertEqual('203.0.113.2',event['to_exit_ip'])
+
+    def test_manual_connect_history_records_actual_exit_ips(self):
+        nodes=self.write_nodes(2)
+        nodes[0]['active']=True
+        manager.write_json(manager.NODES_FILE,nodes)
+        manager.active_openvpn_node_id='node-0'
+        manager.active_openvpn_process=FakeProcess()
+        manager.set_state(proxy_ok=True,proxy_ip='203.0.113.1')
+        with (
+            mock.patch.object(manager,'run_openvpn_until_ready',return_value=(True,'ready',FakeProcess())),
+            mock.patch.object(manager,'setup_policy_routing',return_value=True),
+            mock.patch.object(manager,'cleanup_policy_routing'),
+            mock.patch.object(manager.vpn_utils,'ping_latency_ms',return_value=10),
+            mock.patch.object(manager,'check_proxy_health',return_value={'ok':True,'ip':'203.0.113.2','latency_ms':10}),
+            mock.patch.object(manager,'log_to_json'),
+        ):
+            manager.connect_node('node-1')
+        import time
+        self.assertEqual(1,manager.get_switch_history_store().statistics(time.time()-5,time.time()+1)['total'])
+
     def test_proxy_failures_reset_when_node_changes(self) -> None:
         self.assertEqual(1, manager.record_proxy_failure("node-a"))
         self.assertEqual(2, manager.record_proxy_failure("node-a"))

@@ -147,6 +147,8 @@ class HotStandby:
                 return False
         token, cancel = self.m.begin_connection_attempt()
         started = time.monotonic()
+        previous_state = self.m.get_state()
+        from_ip = previous_state.get('last_verified_exit_ip') or previous_state.get('proxy_ip')
         from_node = self.m.active_openvpn_node_id or self.m.load_ui_config().get('last_native_node_id', '')
         old = None
         try:
@@ -196,7 +198,7 @@ class HotStandby:
                                  standby_ready=False, standby_node_id='',
                                  last_check_message=f"已提升热备节点: {current['id']}")
             self.m.log_to_json('INFO', 'VPN', f"热备提升成功: {current['id']}")
-            self.m.record_switch_event(from_node, current['id'], 'auto', 'success', reason, started)
+            self.m.record_switch_event(from_node, current['id'], 'auto', 'success', reason, started, from_exit_ip=from_ip, to_exit_ip=slot['ip'])
             return True
         finally:
             self.m.finish_connection_attempt(token, cancel)

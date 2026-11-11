@@ -2,6 +2,7 @@ import json
 import tempfile
 import time
 import unittest
+from unittest import mock
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from switch_history import SwitchHistory
@@ -85,3 +86,56 @@ class SwitchHistoryTests(unittest.TestCase):
         self.assertEqual('node-a',second['from_node_id'])
         self.assertEqual('legacy',second['source'])
         self.assertAlmostEqual(datetime.strptime(stamp,'%Y-%m-%d %H:%M:%S').astimezone().timestamp(),second['timestamp'])
+
+    def test_statistics_only_counts_verified_exit_changes_by_default(self):
+        self.store.append('same-node','same-node','auto','reconnected',from_exit_ip='203.0.113.1',to_exit_ip='203.0.113.2')
+        self.store.append('different-node-a','different-node-b','auto','success',from_exit_ip='203.0.113.1',to_exit_ip='203.0.113.1')
+        self.store.append('a','b','auto','success',from_exit_ip='2001:db8::1',to_exit_ip='2001:0db8:0:0:0:0:0:1')
+        self.store.append('JP_192.0.2.1_443_tcp','JP_192.0.2.2_443_tcp','legacy','success',source='legacy')
+        self.store.append('JP_192.0.2.1_443_tcp','JP_192.0.2.1_555_tcp','legacy','success',source='legacy')
+        self.store.append('unknown-a','unknown-b','auto','success')
+        self.store.append('JP_192.0.2.1_443_tcp','JP_192.0.2.2_443_tcp','auto','success',to_exit_ip='203.0.113.2')
+        for result,trigger,old in [('failed','auto','a'),('success','startup','a'),('success','manual','')]:
+            self.store.append(old,'b',trigger,result,from_exit_ip='203.0.113.1',to_exit_ip='203.0.113.2')
+        data=self.store.statistics(self.now-1,self.now+1)
+        self.assertEqual(1,data['total'])
+        self.assertEqual(dict(confirmed=1,inferred=1,unknown=2,same_ip=3,excluded=3),data['counts'])
+        estimated=self.store.statistics(self.now-1,self.now+1,include_legacy=True)
+        self.assertEqual(2,estimated['total'])
+
+    def test_statistics_reads_beyond_history_page_and_fills_zeros(self):
+        for i in range(105):
+            self.store.append('a','b','auto','success',from_exit_ip='203.0.113.1',to_exit_ip='203.0.113.2')
+        data=self.store.statistics(self.now-86400,self.now+1,'hour','Asia/Shanghai')
+        self.assertEqual(105,data['total'])
+        self.assertEqual(105,sum(b['count'] for b in data['buckets']))
+        self.assertTrue(any(b['count']==0 for b in data['buckets']))
+        self.assertGreater(len(data['buckets']),23)
+
+    def test_statistics_uses_browser_timezone_and_monday_weeks(self):
+        # Sunday 23:30 / Monday 00:30 in Shanghai, independent of host TZ.
+        first=datetime(2024,11,10,15,30,tzinfo=timezone.utc).timestamp()
+        second=first+3600
+        with mock.patch.object(self.store,'_prune'):
+            for stamp in [first,second]:
+                self.store.append('a','b','auto','success',timestamp=stamp,from_exit_ip='192.0.2.1',to_exit_ip='192.0.2.2')
+            data=self.store.statistics(first-60,second+60,'week','Asia/Shanghai')
+            self.assertEqual([1,1],[b['count'] for b in data['buckets']])
+            self.assertTrue(all(datetime.fromisoformat(b['label']).weekday()==0 for b in data['buckets']))
+
+    def test_hourly_statistics_keeps_dst_repeated_hours_separate(self):
+        start=datetime(2024,11,3,4,tzinfo=timezone.utc).timestamp()
+        with mock.patch.object(self.store,'_prune'):
+            for hour in [5,6]:
+                self.store.append('a','b','auto','success',timestamp=datetime(2024,11,3,hour,30,tzinfo=timezone.utc).timestamp(),from_exit_ip='192.0.2.1',to_exit_ip='192.0.2.2')
+            data=self.store.statistics(start,start+25*3600,'hour','America/New_York')
+        self.assertEqual(25,len(data['buckets']))
+        self.assertEqual(2,data['total'])
+        repeated=[b for b in data['buckets'] if 'T01:00:00' in b['label']]
+        self.assertEqual([1,1],[b['count'] for b in repeated])
+        self.assertNotEqual(repeated[0]['label'],repeated[1]['label'])
+
+    def test_statistics_rejects_invalid_granularity_and_timezone(self):
+        for kind,tz in [('minute','UTC'),('day','../../etc/passwd'),('week','not-a-zone')]:
+            with self.assertRaises(ValueError):
+                self.store.statistics(self.now-1,self.now+1,kind,tz)

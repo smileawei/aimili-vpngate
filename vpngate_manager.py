@@ -481,10 +481,11 @@ def get_switch_history_store():
             _switch_history_store = switch_history.SwitchHistory(root)
         return _switch_history_store
 
-def record_switch_event(from_node_id, to_node_id, trigger, result, reason="", started=None):
+def record_switch_event(from_node_id, to_node_id, trigger, result, reason="", started=None, *, from_exit_ip=None, to_exit_ip=None):
     try:
         duration = max(0, int((time.monotonic()-started)*1000)) if started is not None else None
-        get_switch_history_store().append(from_node_id, to_node_id, trigger, result, reason, duration)
+        get_switch_history_store().append(from_node_id, to_node_id, trigger, result, reason, duration,
+                                          from_exit_ip=from_exit_ip, to_exit_ip=to_exit_ip)
     except Exception as exc:
         log_to_json("WARNING", "History", f"切换记录保存失败: {exc}")
 
@@ -513,6 +514,8 @@ def set_state(**updates: Any) -> None:
     with lock:
         state = get_state()
         state.update(updates)
+        if updates.get("proxy_ok") and updates.get("proxy_ip") not in (None, "", "-"):
+            state["last_verified_exit_ip"] = updates["proxy_ip"]
         write_json(STATE_FILE, state)
 
 def read_nodes() -> list[dict[str, Any]]:
@@ -2301,6 +2304,8 @@ def connect_node(node_id: str, *, trigger: str = "manual", reason: str = "手动
 
     token, cancel_event = begin_connection_attempt()
     history_from = active_openvpn_node_id or (load_ui_config().get("last_native_node_id", "") if trigger == "auto" else "")
+    history_state = get_state()
+    history_from_ip = history_state.get("last_verified_exit_ip") or history_state.get("proxy_ip")
     history_started = time.monotonic()
     stopped_existing = False
     previous_node_id = ""
@@ -2488,7 +2493,7 @@ def connect_node(node_id: str, *, trigger: str = "manual", reason: str = "手动
             )
         log_to_json("INFO", "VPN", f"节点 {node_id} 连接成功，出口网卡 tun0 已启用")
         cancel_background_refill()
-        record_switch_event(history_from, node_id, trigger, "reconnected" if history_from == node_id else "success", reason, history_started)
+        record_switch_event(history_from, node_id, trigger, "reconnected" if history_from == node_id else "success", reason, history_started, from_exit_ip=history_from_ip, to_exit_ip=res["ip"])
         return f"Connected {node_id}"
     except ConnectionCancelled:
         record_switch_event(history_from, node_id, trigger, "cancelled", "连接操作已取消", history_started)
@@ -4267,6 +4272,15 @@ INDEX_HTML = r"""<!doctype html>
     .history-table th:nth-child(4) { width:100px; }
     .history-table td { overflow-wrap:anywhere; vertical-align:top; }
     .history-table small { color:var(--text-secondary); }
+    .switch-statistics { border:1px solid var(--border-color); border-radius:12px; padding:16px; margin:16px 0; background:var(--bg-surface); }
+    .switch-stat-heading { display:flex; justify-content:space-between; align-items:center; gap:12px; flex-wrap:wrap; }
+    .switch-stat-heading h3 { margin:0; font-size:16px; }
+    .switch-stat-heading label { color:var(--text-secondary); font-size:13px; }
+    .switch-stat-heading .input-field { width:140px; min-height:36px; padding:4px 8px; }
+    .history-legacy-toggle { display:flex; align-items:center; gap:8px; margin-top:12px; font-size:12px; color:var(--text-secondary); }
+    .switch-chart-scroll { max-width:100%; overflow-x:auto; }
+    .switch-chart-scroll svg { display:block; }
+    .switch-stat-bar:hover, .switch-stat-bar:focus { fill:var(--accent-text); outline:none; }
     .history-pagination { justify-content:flex-end; margin-top:16px; }
     .connection-overview { margin-bottom: 24px; }
     .connection-heading { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin: 0 0 12px; }
@@ -4763,6 +4777,13 @@ INDEX_HTML = r"""<!doctype html>
         <label>结果<select id="history_result" class="input-field" onchange="loadSwitchHistory(0)"><option value="">全部结果</option><option value="success">切换成功</option><option value="reconnected">原节点重连</option><option value="failed">连接失败</option><option value="cancelled">已取消</option><option value="disconnected">手动断开</option></select></label>
         <button class="test-btn" type="button" onclick="loadSwitchHistory(0)">刷新记录</button>
       </div>
+      <section class="switch-statistics" aria-label="IP 变化切换次数统计">
+        <div class="switch-stat-heading"><h3>IP 变化切换次数</h3><label>统计维度 <select id="history_granularity" class="input-field" onchange="loadSwitchStatistics()"><option value="hour">h · 小时</option><option value="day" selected>day · 天</option><option value="week">week · 周</option></select></label></div>
+        <label class="history-legacy-toggle"><input id="history_include_legacy" type="checkbox" onchange="loadSwitchStatistics()"> 包含历史节点 IP 推断（非实测出口 IP）</label>
+        <p id="switch_stats_summary" class="role-note" role="status" aria-live="polite"></p>
+        <div id="switch_stats_chart" class="switch-chart-scroll"></div>
+        <p id="switch_stats_note" class="role-note">仅统计成功且 IP 改变的切换；失败、首次连接和同 IP 操作不计入。按所选日期汇总，周从周一开始；首尾时间段可能不完整。</p>
+      </section>
       <p id="history_summary" class="role-note" role="status" aria-live="polite"></p>
       <div class="table-container"><table class="history-table"><thead><tr><th>时间（本地）</th><th>原节点 → 目标节点</th><th>触发方式</th><th>结果</th><th>原因 / 耗时</th></tr></thead><tbody id="history_rows"></tbody></table></div>
       <div class="history-pagination"><button id="history_prev" type="button" class="test-btn" onclick="loadSwitchHistory(Math.max(0,historyOffset-50))">上一页</button><span id="history_page" class="role-note"></span><button id="history_next" type="button" class="test-btn" onclick="loadSwitchHistory(historyOffset+50)">下一页</button></div>
@@ -4806,6 +4827,47 @@ async function readJsonResponse(response, fallbackMessage) {
   if (!response.ok) throw new Error(data.error || `${fallbackMessage} (${response.status})`);
   return data;
 }
+let statisticsRequest = 0;
+function renderSwitchStatistics(data) {
+  const buckets = Array.isArray(data.buckets) ? data.buckets : [];
+  const counts = data.counts || {};
+  $("switch_stats_summary").textContent = data.include_legacy
+    ? `所选范围共 ${Number(data.total)||0} 次 · 实测出口变化 ${Number(counts.confirmed)||0} 次 + 历史节点 IP 推断 ${Number(counts.inferred)||0} 次`
+    : `已确认出口 IP 变化 ${Number(data.total)||0} 次 · 另有 ${Number(counts.inferred)||0} 次历史节点 IP 变化未纳入`;
+  $("switch_stats_note").textContent = `仅统计成功且 IP 改变的操作；首次连接、失败、同 IP 换端口不计入。无法识别 IP 的成功记录 ${Number(counts.unknown)||0} 条未计入。${data.timezone || "浏览器本地时间"} · 周一为周起点 · 首尾时间段可能不完整 · 图表不受明细结果筛选影响。`;
+  if (!buckets.length) { $("switch_stats_chart").textContent = "所选日期没有可统计的时间段。"; return; }
+  const width = Math.max(720, buckets.length*14), height = 250;
+  const left=44, right=18, top=24, bottom=48, plotHeight=height-top-bottom;
+  const values=buckets.map(b=>Math.max(0,Number(b.count)||0));
+  const maximum=Math.max(1,...values), step=Math.max(1,Math.ceil(maximum/4)), yMax=Math.ceil(maximum/step)*step;
+  const slot=(width-left-right)/buckets.length;
+  const labelStride=Math.max(1,Math.ceil(buckets.length/Math.floor(width/110)));
+  let grid="";
+  for(let value=0;value<=yMax;value+=step){const y=top+plotHeight-value/yMax*plotHeight;grid+=`<line x1="${left}" y1="${y}" x2="${width-right}" y2="${y}" stroke="var(--border-color)"/><text x="${left-8}" y="${y+4}" text-anchor="end" fill="var(--text-secondary)" font-size="11">${value}</text>`;}
+  const bars=buckets.map((bucket,i)=>{
+    const count=values[i], x=left+i*slot+slot*.15, barWidth=Math.max(1,slot*.7), barHeight=count/yMax*plotHeight, y=top+plotHeight-barHeight;
+    const date=new Date(Number(bucket.timestamp)*1000);
+    const shortLabel=date.toLocaleDateString(undefined,{month:"2-digit",day:"2-digit",timeZone:data.timezone})+(data.granularity==="hour"?" "+date.toLocaleTimeString(undefined,{hour:"2-digit",hour12:false,timeZone:data.timezone}):"");
+    const tooltip=date.toLocaleString(undefined,{timeZone:data.timezone,hour12:false,timeZoneName:"shortOffset"})+`：${count} 次（实测 ${Number(bucket.confirmed)||0}，${data.include_legacy ? "历史推断" : "未纳入历史推断"} ${Number(bucket.inferred)||0}）`;
+    return `<rect class="switch-stat-bar" x="${x}" y="${count?y:top+plotHeight-1}" width="${barWidth}" height="${count?barHeight:1}" fill="${count?'var(--primary)':'var(--border-color)'}" rx="2" ${count?'tabindex="0"':''} aria-label="${esc(tooltip)}"><title>${esc(tooltip)}</title></rect>${count?`<text x="${x+barWidth/2}" y="${y-5}" text-anchor="middle" fill="var(--text-primary)" font-size="10">${count}</text>`:""}${i%labelStride===0?`<text x="${x+barWidth/2}" y="${height-20}" text-anchor="middle" fill="var(--text-secondary)" font-size="10">${esc(shortLabel)}</text>`:""}`;
+  }).join("");
+  $("switch_stats_chart").innerHTML=`<svg width="${width}" height="${height}" role="img" aria-label="IP 变化切换次数柱状图，共 ${Number(data.total)||0} 次"><title>按${data.granularity==='hour'?'小时':data.granularity==='week'?'周':'天'}统计 IP 变化</title>${grid}${bars}</svg>`;
+}
+async function loadSwitchStatistics() {
+  const request=++statisticsRequest;
+  $("switch_stats_chart").innerHTML="";
+  $("switch_stats_summary").textContent="正在统计 IP 变化…";
+  const start=new Date(`${$("history_start").value}T00:00:00`);
+  const end=new Date(`${$("history_end").value}T00:00:00`);end.setDate(end.getDate()+1);
+  if(!Number.isFinite(+start)||!Number.isFinite(+end)||start>=end||end-start>90*86400000+7200000){$("switch_stats_summary").textContent="请选择有效日期范围，单次最多查询 90 天。";return;}
+  try {
+    const query=new URLSearchParams({start:String(+start/1000),end:String(+end/1000),granularity:$("history_granularity").value,timezone:Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC",include_legacy:String($("history_include_legacy").checked)});
+    const response=await fetchWithTimeout(`./api/switch_statistics?${query}`,{cache:"no-store"},15000);
+    const data=await readJsonResponse(response,"切换统计读取失败");
+    if(request===statisticsRequest)renderSwitchStatistics(data);
+  } catch(error){if(request===statisticsRequest)$("switch_stats_summary").textContent=error.message || "统计读取失败";}
+}
+
 let historyOffset = 0;
 let historyRequest = 0;
 function localDateValue(date) {
@@ -4819,8 +4881,9 @@ function openSwitchHistoryModal() {
   showModal("switch_history_modal");
   loadSwitchHistory(0);
 }
-function closeSwitchHistoryModal() { historyRequest++; hideModal("switch_history_modal"); }
+function closeSwitchHistoryModal() { historyRequest++; statisticsRequest++; hideModal("switch_history_modal"); }
 async function loadSwitchHistory(offset = 0) {
+  if (offset === 0) loadSwitchStatistics();
   const request = ++historyRequest;
   const start = new Date(`${$("history_start").value}T00:00:00`);
   const end = new Date(`${$("history_end").value}T00:00:00`); end.setDate(end.getDate()+1);
@@ -7176,6 +7239,18 @@ class Handler(BaseHTTPRequestHandler):
                     pinger_status
                 ]
             })
+        elif effective_path == "/api/switch_statistics":
+            try:
+                query = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query)
+                data = get_switch_history_store().statistics(
+                    float(query.get("start", [time.time()-7*86400])[0]),
+                    float(query.get("end", [time.time()+1])[0]),
+                    query.get("granularity", ["day"])[0], query.get("timezone", ["UTC"])[0],
+                    query.get("include_legacy", ["false"])[0] == "true",
+                )
+                self.send_json(data)
+            except (ValueError, OverflowError):
+                self.send_json({"error": "日期、维度或时区无效，最多查询 90 天"}, HTTPStatus.BAD_REQUEST)
         elif effective_path == "/api/switch_history":
             try:
                 query = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query)

@@ -2,6 +2,8 @@
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 import hashlib
+import ipaddress
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 import json
 import re
 import threading
@@ -17,13 +19,15 @@ class SwitchHistory:
         self.lock = threading.RLock()
 
     def append(self, from_node_id, to_node_id, trigger, result, reason='', duration_ms=None,
-               *, timestamp=None, event_id=None, source='structured'):
+               *, timestamp=None, event_id=None, source='structured', from_exit_ip=None, to_exit_ip=None):
         now = time.time() if timestamp is None else timestamp
         stamp = datetime.fromtimestamp(now, timezone.utc)
         event = dict(id=event_id or uuid.uuid4().hex, timestamp=now,
                      timestamp_iso=stamp.isoformat(), from_node_id=str(from_node_id or ''),
                      to_node_id=str(to_node_id or ''), trigger=trigger, result=result,
                      reason=str(reason or '')[:4000], duration_ms=duration_ms, source=source)
+        if source != 'legacy' or from_exit_ip is not None or to_exit_ip is not None:
+            event.update(from_exit_ip=from_exit_ip, to_exit_ip=to_exit_ip)
         with self.lock:
             self.root.mkdir(parents=True, exist_ok=True)
             with (self.root / f'{stamp:%Y-%m-%d}.jsonl').open('a', encoding='utf-8') as f:
@@ -40,7 +44,7 @@ class SwitchHistory:
             except ValueError:
                 continue
 
-    def read(self, start, end, offset=0, limit=50, result=''):
+    def read(self, start, end, offset=0, limit=50, result='', *, _all=False):
         if not (0 <= start < end <= time.time()+86400*2):
             raise ValueError('日期范围无效')
         if end-start > 90*86400+7200:
@@ -71,8 +75,73 @@ class SwitchHistory:
                     except (ValueError, TypeError, KeyError):
                         continue
         entries.sort(key=lambda e: (e['timestamp'], e['id']), reverse=True)
-        return dict(entries=entries[offset:offset+limit], total=len(entries), offset=offset,
+        return dict(entries=entries if _all else entries[offset:offset+limit], total=len(entries), offset=offset,
                     limit=limit, has_more=offset+limit < len(entries), retention_days=self.retention_days)
+
+    @staticmethod
+    def ip_change_basis(event):
+        if event.get('result') not in ('success', 'reconnected') or event.get('trigger') == 'startup':
+            return 'excluded'
+        if not event.get('from_node_id') or not event.get('to_node_id'):
+            return 'excluded'
+        measured = 'from_exit_ip' in event or 'to_exit_ip' in event
+        def parse(value):
+            try:
+                return ipaddress.ip_address(str(value))
+            except ValueError:
+                return None
+        if measured:
+            before, after = parse(event.get('from_exit_ip')), parse(event.get('to_exit_ip'))
+        else:
+            def node_ip(value):
+                match = re.fullmatch(r'[A-Za-z]{2}_([^_]+)_\d+_(?:tcp|udp)', str(value))
+                return parse(match.group(1)) if match else None
+            before, after = node_ip(event.get('from_node_id')), node_ip(event.get('to_node_id'))
+        if before is None or after is None:
+            return 'unknown'
+        return ('confirmed' if measured else 'inferred') if before != after else 'same_ip'
+
+    def statistics(self, start, end, granularity='day', timezone_name='UTC', include_legacy=False):
+        if granularity not in ('hour', 'day', 'week'):
+            raise ValueError('统计维度无效')
+        try:
+            tz = ZoneInfo(timezone_name)
+        except (ZoneInfoNotFoundError, ValueError, TypeError) as exc:
+            raise ValueError('时区无效') from exc
+        entries = self.read(start, end, _all=True)['entries']
+        def floor(stamp):
+            local = datetime.fromtimestamp(stamp, tz)
+            if granularity == 'hour':
+                return local.replace(minute=0, second=0, microsecond=0)
+            local = local.replace(hour=0, minute=0, second=0, microsecond=0)
+            return local-timedelta(days=local.weekday()) if granularity == 'week' else local
+        buckets = {}
+        current = floor(start)
+        while current.timestamp() < end:
+            stamp = current.timestamp()
+            buckets[stamp] = dict(timestamp=stamp, label=current.isoformat(), count=0, confirmed=0, inferred=0)
+            if granularity == 'hour':
+                next_stamp = stamp+3600
+                current = floor(next_stamp)
+                while current.timestamp() <= stamp:
+                    next_stamp += 1800
+                    current = floor(next_stamp)
+            else:
+                current += timedelta(days=7 if granularity == 'week' else 1)
+        counts = dict(confirmed=0, inferred=0, unknown=0, same_ip=0, excluded=0)
+        for event in entries:
+            basis = self.ip_change_basis(event)
+            counts[basis] += 1
+            if basis not in ('confirmed', 'inferred'):
+                continue
+            bucket = buckets.get(floor(event['timestamp']).timestamp())
+            if bucket is not None:
+                bucket[basis] += 1
+                if basis == 'confirmed' or include_legacy:
+                    bucket['count'] += 1
+        return dict(buckets=list(buckets.values()), total=counts['confirmed']+(counts['inferred'] if include_legacy else 0),
+                    counts=counts, granularity=granularity, timezone=timezone_name,
+                    include_legacy=include_legacy, week_starts_on='Monday')
 
     def import_legacy(self, logs):
         """Import once; old timestamps use the application's local timezone."""

@@ -8,7 +8,7 @@ LABEL org.opencontainers.image.title="AimiliVPN SoftEther" \
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
-        ca-certificates curl iproute2 iptables procps psmisc python3 \
+        ca-certificates tzdata curl iproute2 iptables procps psmisc python3 \
         softether-vpnclient isc-dhcp-client \
     && rm -rf /var/lib/apt/lists/*
 
