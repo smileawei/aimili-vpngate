@@ -10,7 +10,7 @@
 - **可选内网免登录**：`data/ui_auth.json` 支持 `"auth_enabled": false` 和 `"secret_path": ""`，可直接从根路径访问后台；默认仍启用认证。
 - **后台与验证**：后台显示热备状态；新增主备提升、并发出口绑定、取消连接及资源清理测试，共 83 项测试通过。
 
-本仓库的 SoftEther 镜像目前通过源码本地构建，普通启动或重启复用已有镜像；修改代码后需重新构建。
+本仓库支持通过 GitHub Actions 构建并发布 SoftEther 镜像，也可在本地构建；普通启动或重启复用已有镜像。
 SoftEther 默认 Web 端口为 `8787`，HTTP CONNECT / SOCKS5 代理共用端口 `7929`。
 
 部署步骤见 [DEPLOYMENT.md](DEPLOYMENT.md)，完整修改记录见 [RELEASE_NOTES.md](RELEASE_NOTES.md)。
@@ -22,6 +22,14 @@ SoftEther 默认 Web 端口为 `8787`，HTTP CONNECT / SOCKS5 代理共用端口
 - 热备连续快速检查失败后，使用另一地址进行 3 秒复核，减少检测网站抖动造成的重复重建；健康过期的热备仍禁止直接提升。
 - 保留检查连接代次及节点身份的保护，丢弃切换期间产生的过期复核结果。
 - 87 项测试通过，覆盖复核成功保留节点、复核失败切换、并发超时参数及热备备用地址确认。
+
+### GitHub 自动构建 Docker 镜像（2026-11-11）
+
+- 新增 `Publish SoftEther image` 工作流：主干代码更新时自动运行测试，构建并发布 amd64、arm64 镜像，也支持在 Actions 页面手动运行。
+- 镜像地址：`ghcr.io/smileawei/aimili-vpngate-softether:latest`；每次还发布 `sha-<12位提交号>` 标签，可固定版本。
+- SoftEther Dockerfile 改为从 Debian 独立构建，无需预先构建本机基础镜像；支持构建缓存。
+- 新增 `compose.ghcr.yaml`，仅拉取镜像运行，无需在部署机器构建；详细步骤见 [部署说明](DEPLOYMENT.md#使用-github-发布的镜像)。
+- 发布使用 GitHub 内置 `GITHUB_TOKEN`，不需要 Docker Hub 密码；首次发布后若包为私有，需要在 GitHub Packages 中将其可见性设为 Public，才能匿名拉取。
 
 ---
 

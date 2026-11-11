@@ -37,6 +37,14 @@
 - 保留检查连接代次及节点身份的保护，丢弃切换期间产生的过期复核结果。
 - 87 项测试通过，覆盖复核成功保留节点、复核失败切换、并发超时参数及热备备用地址确认。
 
+### GitHub 自动构建 Docker 镜像（2026-11-11）
+
+- 新增 `Publish SoftEther image` 工作流：主干代码更新时自动运行测试，构建并发布 amd64、arm64 镜像，也支持在 Actions 页面手动运行。
+- 镜像地址：`ghcr.io/smileawei/aimili-vpngate-softether:latest`；每次还发布 `sha-<12位提交号>` 标签，可固定版本。
+- SoftEther Dockerfile 改为从 Debian 独立构建，无需预先构建本机基础镜像；支持构建缓存。
+- 新增 `compose.ghcr.yaml`，仅拉取镜像运行，无需在部署机器构建；详细步骤见 [部署说明](DEPLOYMENT.md#使用-github-发布的镜像)。
+- 发布使用 GitHub 内置 `GITHUB_TOKEN`，不需要 Docker Hub 密码；首次发布后若包为私有，需要在 GitHub Packages 中将其可见性设为 Public，才能匿名拉取。
+
 ---
 
 # AimiliVPN V2.1.5 正式版

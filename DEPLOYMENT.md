@@ -5,7 +5,6 @@
 ## 构建与启动
 
 ```bash
-docker build --build-arg BUILD_VERSION=2.1.5 -t aimili-vpngate:2.1.5-local .
 docker compose up -d --build softether
 docker compose ps
 docker compose logs --tail=100 softether
@@ -70,3 +69,28 @@ docker compose logs -f --tail=100 softether
 任一路复核成功即保留当前主连接并清零失败计数；复核失败才进入共享上游排查及切换。
 这样会比原热切换增加最多约 3 秒的确认时间，降低短时抖动造成的误切；不承诺所有网络下的固定恢复耗时。
 热备连续检查失败时也会通过另一检测地址复核，确认失败才清理会话。
+
+## 使用 GitHub 发布的镜像
+
+主干代码更新后，GitHub Actions 的 **Publish SoftEther image** 会测试并发布：
+
+```text
+ghcr.io/smileawei/aimili-vpngate-softether:latest
+ghcr.io/smileawei/aimili-vpngate-softether:sha-<12位提交号>
+```
+
+支持 `linux/amd64`、`linux/arm64`，Docker 会自动选择对应架构。
+首次发布若包默认为私有，在 GitHub 仓库的 Packages 中打开该镜像，进入 Package settings，将 Visibility 设为 Public 后即可匿名拉取。
+
+从仓库目录执行（保留原 `data/`，不要同时运行两套占用相同端口的服务）：
+
+```bash
+docker compose -f compose.ghcr.yaml pull
+docker compose -f compose.ghcr.yaml up -d
+docker compose -f compose.ghcr.yaml ps
+```
+
+更新时同样执行 `pull` 和 `up -d`，不需要本地构建。
+可在 `.env` 设置 `SOFTETHER_IMAGE_TAG=sha-<12位提交号>` 固定镜像版本，`SOFTETHER_UPSTREAM_PROXY` 覆盖上游代理；上游默认仍为 `socks5://10.220.10.253:1081`。
+发布工作流使用 GitHub 自动提供的 `GITHUB_TOKEN`，权限为 `contents: read`、`packages: write`。
+如果 fork 的 Actions 尚未启用，先在仓库 Actions 页面启用，再手动运行此工作流。
