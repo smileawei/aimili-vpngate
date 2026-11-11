@@ -30,7 +30,7 @@ ENV PYTHONUNBUFFERED=1 \
     LOCAL_PROXY_HOST=0.0.0.0 \
     LOCAL_PROXY_PORT=7929
 
-RUN mkdir -p /data \
+RUN mkdir -p /data /run/softether \
     && chmod 755 /opt/native/dhcp.py \
     && python3 -m py_compile *.py /opt/native/*.py
 VOLUME ["/data"]
