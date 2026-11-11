@@ -108,3 +108,13 @@ docker compose -f compose.ghcr.yaml ps
 默认仅纳入成功且实测确认出口 IP 改变的操作，同 IP 换端口、失败、首次连接及启动恢复不计入。
 新版本会记录前后出口 IP；旧记录无实测数据，默认不计入，可勾选 **包含历史节点 IP 推断** 查看按旧节点地址推断的变化，推断数量会单独说明。
 统计时区来自浏览器，镜像显式安装 tzdata 以支持不同地区及夏令时规则。统计仍受 90 天保留期限制。
+
+## V2.2.0 固定版本升级
+
+```bash
+SOFTETHER_IMAGE_TAG=2.2.0 docker compose -f compose.ghcr.yaml pull
+SOFTETHER_IMAGE_TAG=2.2.0 docker compose -f compose.ghcr.yaml up -d
+```
+
+需要后续操作仍固定版本时，编辑现有 `.env`，设置 `SOFTETHER_IMAGE_TAG=2.2.0`。保留 `data/`，不要清空凭据和切换历史。
+[本次发布说明](docs/releases/v2.2.0.md)列出了镜像、源码包与兼容性说明。

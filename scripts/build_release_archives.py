@@ -22,6 +22,14 @@ RELEASE_FILES = [
     "switch_history.py",
     "Dockerfile",
     "compose.yaml",
+    "compose.native.yaml",
+    "compose.ghcr.yaml",
+    "DEPLOYMENT.md",
+    "native/Dockerfile",
+    "native/start.py",
+    "native/backend.py",
+    "native/dhcp.py",
+    "native/hotstandby.py",
 ]
 
 
@@ -58,8 +66,11 @@ def build_archive(root: Path, output_dir: Path) -> Path:
         package_root.mkdir()
 
         for name in RELEASE_FILES:
+            (package_root / name).parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(root / name, package_root / name)
         shutil.copytree(root / "mirror", package_root / "mirror")
+        if (root / "docs").is_dir():
+            shutil.copytree(root / "docs", package_root / "docs")
 
         archive_path = output_dir / f"{package_name}.tar.gz"
         with tarfile.open(archive_path, "w:gz") as archive:

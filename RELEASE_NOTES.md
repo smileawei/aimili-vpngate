@@ -1,3 +1,14 @@
+# V2.2.0 正式版（2026-11-11）
+
+已汇总本仓库的 SoftEther 主备、防抖切换、主备展示、日夜主题、默认筛选、同地区优先、切换历史及 IP 变化统计功能。
+
+- 正式版本：`v2.2.0`；SoftEther 镜像：`ghcr.io/smileawei/aimili-vpngate-softether:2.2.0`（amd64 / arm64）。
+- 保留 OpenVPN 镜像：`ghcr.io/smileawei/aimili-vpngate:2.2.0`；同时发布 `2.2`、`latest` 标签。
+- 提供完整源码包和 SHA-256 校验文件，补全 SoftEther、Compose 及部署文档；保留已有 `data/` 即可升级。
+- 更新检查、主干链接和安装器默认仓库改为本 fork；107 项测试通过。
+
+完整说明与升级命令见 [V2.2.0 发布说明](docs/releases/v2.2.0.md)。
+
 # Fork 更新记录 · 2026-11-10
 
 ## 主备热切换
