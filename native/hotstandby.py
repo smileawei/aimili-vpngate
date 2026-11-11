@@ -140,12 +140,14 @@ class HotStandby:
                 finally:
                     self.m.release_test_index(index)
 
-    def promote(self):
+    def promote(self, reason="主节点出口异常，提升热备"):
         with self.lock:
             slot = self.slot
             if not slot or time.monotonic()-slot['verified'] > 5:
                 return False
         token, cancel = self.m.begin_connection_attempt()
+        started = time.monotonic()
+        from_node = self.m.active_openvpn_node_id or self.m.load_ui_config().get('last_native_node_id', '')
         old = None
         try:
             cfg = self.m.load_ui_config()
@@ -194,6 +196,7 @@ class HotStandby:
                                  standby_ready=False, standby_node_id='',
                                  last_check_message=f"已提升热备节点: {current['id']}")
             self.m.log_to_json('INFO', 'VPN', f"热备提升成功: {current['id']}")
+            self.m.record_switch_event(from_node, current['id'], 'auto', 'success', reason, started)
             return True
         finally:
             self.m.finish_connection_attempt(token, cancel)

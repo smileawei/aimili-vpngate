@@ -94,3 +94,10 @@ docker compose -f compose.ghcr.yaml ps
 可在 `.env` 设置 `SOFTETHER_IMAGE_TAG=sha-<12位提交号>` 固定镜像版本，`SOFTETHER_UPSTREAM_PROXY` 覆盖上游代理；上游默认仍为 `socks5://10.220.10.253:1081`。
 发布工作流使用 GitHub 自动提供的 `GITHUB_TOKEN`，权限为 `contents: read`、`packages: write`。
 如果 fork 的 Actions 尚未启用，先在仓库 Actions 页面启用，再手动运行此工作流。
+
+## 查询节点切换记录
+
+在后台“主备连接状态”旁点击 **切换记录**。日期和时间使用浏览器本地时区，可选起止日期、结果并分页。
+记录位于挂载数据目录的 `switch_history/YYYY-MM-DD.jsonl`，保留约 90 天，更新镜像或重启不会丢失；备份时包含整个 `data/` 目录即可。
+首次更新会导入仍保留的运行日志，旧记录缺少的触发原因和耗时不会猜测补全，已经删除的日志无法恢复。
+操作耗时指连接或热备提升本身，不包含之前的故障检测等待。新记录会区分自动、手动、启动恢复和失败后恢复。

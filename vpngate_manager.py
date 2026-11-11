@@ -62,6 +62,7 @@ class DualStackHTTPServer(ThreadingHTTPServer):
 import vpn_utils
 import proxy_server
 import snapshot_utils
+import switch_history
 
 VPN_BACKEND = os.environ.get("VPN_BACKEND", "openvpn").strip().lower()
 VPN_PROTOCOL_LABEL = "SoftEther SSL-VPN" if VPN_BACKEND == "softether" else "OpenVPN"
@@ -468,6 +469,25 @@ def read_recent_log_entries(log_file: Path, limit: int = WEB_LOG_MAX_ENTRIES) ->
             if isinstance(entry, dict):
                 entries.append(entry)
     return list(entries)
+
+
+_switch_history_store = None
+
+def get_switch_history_store():
+    global _switch_history_store
+    root = DATA_DIR / "switch_history"
+    with lock:
+        if _switch_history_store is None or _switch_history_store.root != root:
+            _switch_history_store = switch_history.SwitchHistory(root)
+        return _switch_history_store
+
+def record_switch_event(from_node_id, to_node_id, trigger, result, reason="", started=None):
+    try:
+        duration = max(0, int((time.monotonic()-started)*1000)) if started is not None else None
+        get_switch_history_store().append(from_node_id, to_node_id, trigger, result, reason, duration)
+    except Exception as exc:
+        log_to_json("WARNING", "History", f"切换记录保存失败: {exc}")
+
 
 def log_to_json(level: str, module: str, message: str) -> None:
     try:
@@ -1876,7 +1896,7 @@ def enforce_active_node_allowed_by_routing(ui_cfg: dict[str, Any], reason: str =
         )
 
         if ui_cfg.get("connection_enabled", True) and ui_cfg.get("routing_mode") != "fixed_ip":
-            threading.Thread(target=auto_switch_node, daemon=True).start()
+            threading.Thread(target=auto_switch_node, kwargs={"reason": reason}, daemon=True).start()
         return msg
 
 def reconnect_fixed_node_if_needed(ui_cfg: dict[str, Any]) -> bool:
@@ -1892,7 +1912,7 @@ def reconnect_fixed_node_if_needed(ui_cfg: dict[str, Any]) -> bool:
 
     print(f"[维护线程] 固定 IP 模式下 OpenVPN 未运行，正在重新拉起同一节点: {target_id}", flush=True)
     try:
-        connect_node(target_id)
+        connect_node(target_id, trigger="auto", reason="固定 IP 模式重连原节点")
         return active_openvpn_running()
     except Exception as e:
         print(f"[维护线程] 重新拉起固定节点 {target_id} 失败: {e}", flush=True)
@@ -2183,7 +2203,7 @@ def schedule_background_refill() -> bool:
         background_refill_thread.start()
         return True
 
-def auto_switch_node(attempt: int = 0, tried: set[str] | None = None) -> None:
+def auto_switch_node(attempt: int = 0, tried: set[str] | None = None, reason: str = "自动恢复可用出口") -> None:
     if is_connecting:
         return
     tried = set() if tried is None else set(tried)
@@ -2206,7 +2226,7 @@ def auto_switch_node(attempt: int = 0, tried: set[str] | None = None) -> None:
         print("[自动切换] 当前处于固定 IP 模式，不进行自动连接或切换。", flush=True)
         return
 
-    if hot_standby is not None and hot_standby.promote():
+    if hot_standby is not None and hot_standby.promote(reason=reason):
         return
 
     # Find the next best available node
@@ -2232,7 +2252,7 @@ def auto_switch_node(attempt: int = 0, tried: set[str] | None = None) -> None:
         print(f"[自动切换] {msg}", flush=True)
         log_to_json("INFO", "VPN", msg)
         try:
-            connect_node(next_node["id"])
+            connect_node(next_node["id"], trigger="auto", reason=reason)
         except Exception as e:
             err_msg = f"切换到备用节点 {next_node['id']} 失败: {e}，将尝试下一个..."
             print(f"[自动切换] {err_msg}", flush=True)
@@ -2244,7 +2264,7 @@ def auto_switch_node(attempt: int = 0, tried: set[str] | None = None) -> None:
                 set_state(proxy_error=shared_error, last_check_message=shared_error)
                 schedule_background_refill()
                 return
-            auto_switch_node(attempt + 1, tried | {next_node["id"]})
+            auto_switch_node(attempt + 1, tried | {next_node["id"]}, reason=reason)
     else:
         msg = "没有可用的备选节点，将自动断开并清理当前连接状态，同时在后台异步获取新节点..."
         if routing_mode == "fixed_region" and target_country:
@@ -2262,7 +2282,7 @@ def recover_after_manual_connect_failure(previous_node_id: str) -> None:
     if previous_node_id:
         try:
             log_to_json("WARNING", "VPN", f"手动切换失败，正在恢复原节点: {previous_node_id}")
-            connect_node(previous_node_id)
+            connect_node(previous_node_id, trigger="recovery", reason="手动切换失败，恢复原节点")
             return
         except Exception as exc:
             log_to_json("ERROR", "VPN", f"恢复原节点 {previous_node_id} 失败: {exc}")
@@ -2271,7 +2291,7 @@ def recover_after_manual_connect_failure(previous_node_id: str) -> None:
     if ui_cfg.get("connection_enabled", True) and ui_cfg.get("routing_mode") != "fixed_ip":
         auto_switch_node()
 
-def connect_node(node_id: str) -> str:
+def connect_node(node_id: str, *, trigger: str = "manual", reason: str = "手动选择节点") -> str:
     global active_openvpn_process, active_openvpn_node_id
     global last_active_ping_time, last_active_latency
     global consecutive_proxy_failures, last_proxy_failure_node_id
@@ -2280,6 +2300,8 @@ def connect_node(node_id: str) -> str:
         raise ValueError("Node id is required")
 
     token, cancel_event = begin_connection_attempt()
+    history_from = active_openvpn_node_id or (load_ui_config().get("last_native_node_id", "") if trigger == "auto" else "")
+    history_started = time.monotonic()
     stopped_existing = False
     previous_node_id = ""
     try:
@@ -2466,12 +2488,15 @@ def connect_node(node_id: str) -> str:
             )
         log_to_json("INFO", "VPN", f"节点 {node_id} 连接成功，出口网卡 tun0 已启用")
         cancel_background_refill()
+        record_switch_event(history_from, node_id, trigger, "reconnected" if history_from == node_id else "success", reason, history_started)
         return f"Connected {node_id}"
     except ConnectionCancelled:
+        record_switch_event(history_from, node_id, trigger, "cancelled", "连接操作已取消", history_started)
         if stopped_existing:
             stop_active_openvpn()
         raise
     except Exception as exc:
+        record_switch_event(history_from, node_id, trigger, "failed", f"{reason}: {exc}", history_started)
         if stopped_existing or (active_openvpn_node_id == node_id and not active_openvpn_running()):
             with lock:
                 current_nodes = read_nodes()
@@ -4230,6 +4255,19 @@ INDEX_HTML = r"""<!doctype html>
     .brand { min-width: 0; }
     .status { flex-wrap: wrap; overflow-wrap: anywhere; }
     .status-dot { flex-shrink: 0; }
+
+    .connection-history-actions, .history-filters, .history-pagination { display:flex; align-items:center; gap:12px; flex-wrap:wrap; }
+    .history-filters { margin:16px 0; align-items:flex-end; }
+    .history-filters label { display:flex; flex-direction:column; gap:6px; color:var(--text-secondary); font-size:13px; }
+    .history-filters .input-field { width:170px; min-height:38px; box-sizing:border-box; }
+    .history-table { min-width:920px; table-layout:fixed; }
+    .history-table th:nth-child(1) { width:150px; }
+    .history-table th:nth-child(2) { width:260px; }
+    .history-table th:nth-child(3) { width:80px; }
+    .history-table th:nth-child(4) { width:100px; }
+    .history-table td { overflow-wrap:anywhere; vertical-align:top; }
+    .history-table small { color:var(--text-secondary); }
+    .history-pagination { justify-content:flex-end; margin-top:16px; }
     .connection-overview { margin-bottom: 24px; }
     .connection-heading { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin: 0 0 12px; }
     .connection-heading h2 { margin: 0; font-size: 17px; color: var(--text-primary); }
@@ -4329,7 +4367,7 @@ INDEX_HTML = r"""<!doctype html>
 <main>
   
     <section class="connection-overview" aria-label="主备连接状态">
-      <div class="connection-heading"><h2>主备连接状态</h2><span id="protection_status" class="protection-status pending" role="status">正在读取连接状态</span></div>
+      <div class="connection-heading"><h2>主备连接状态</h2><div class="connection-history-actions"><span id="protection_status" class="protection-status pending" role="status">正在读取连接状态</span><button type="button" class="test-btn" onclick="openSwitchHistoryModal()">切换记录</button></div></div>
       <div id="connection_pair" class="connection-pair">
         <section id="active_node_card" aria-label="主用节点"></section>
         <section id="standby_node_card" aria-label="热备节点"></section>
@@ -4715,6 +4753,22 @@ INDEX_HTML = r"""<!doctype html>
     </div>
   </div>
 </main>
+  <div id="switch_history_modal" class="modal" role="dialog" aria-modal="true" aria-labelledby="switch_history_title" aria-hidden="true" style="display:none;">
+    <div class="modal-content" tabindex="-1" style="max-width:1100px;">
+      <div style="display:flex;justify-content:space-between;align-items:center;gap:16px;"><h2 id="switch_history_title" style="margin:0;">节点切换记录</h2><button type="button" class="test-btn" onclick="closeSwitchHistoryModal()" aria-label="关闭切换记录">关闭</button></div>
+      <p class="role-note">时间按浏览器本地时区显示，记录独立保存约 90 天。历史导入记录的触发原因或耗时可能不完整；操作耗时不含故障检测等待。</p>
+      <div class="history-filters">
+        <label>开始日期<input id="history_start" type="date" class="input-field" onchange="loadSwitchHistory(0)"></label>
+        <label>结束日期<input id="history_end" type="date" class="input-field" onchange="loadSwitchHistory(0)"></label>
+        <label>结果<select id="history_result" class="input-field" onchange="loadSwitchHistory(0)"><option value="">全部结果</option><option value="success">切换成功</option><option value="reconnected">原节点重连</option><option value="failed">连接失败</option><option value="cancelled">已取消</option><option value="disconnected">手动断开</option></select></label>
+        <button class="test-btn" type="button" onclick="loadSwitchHistory(0)">刷新记录</button>
+      </div>
+      <p id="history_summary" class="role-note" role="status" aria-live="polite"></p>
+      <div class="table-container"><table class="history-table"><thead><tr><th>时间（本地）</th><th>原节点 → 目标节点</th><th>触发方式</th><th>结果</th><th>原因 / 耗时</th></tr></thead><tbody id="history_rows"></tbody></table></div>
+      <div class="history-pagination"><button id="history_prev" type="button" class="test-btn" onclick="loadSwitchHistory(Math.max(0,historyOffset-50))">上一页</button><span id="history_page" class="role-note"></span><button id="history_next" type="button" class="test-btn" onclick="loadSwitchHistory(historyOffset+50)">下一页</button></div>
+    </div>
+  </div>
+
 <script>
 let nodes=[], state={}, testingNodeIds = new Set();
 const favoriteRequestIds = new Set();
@@ -4752,6 +4806,52 @@ async function readJsonResponse(response, fallbackMessage) {
   if (!response.ok) throw new Error(data.error || `${fallbackMessage} (${response.status})`);
   return data;
 }
+let historyOffset = 0;
+let historyRequest = 0;
+function localDateValue(date) {
+  return `${date.getFullYear()}-${String(date.getMonth()+1).padStart(2,"0")}-${String(date.getDate()).padStart(2,"0")}`;
+}
+function openSwitchHistoryModal() {
+  if (!$("history_start").value) {
+    const end = new Date(); const start = new Date(); start.setDate(start.getDate()-6);
+    $("history_start").value = localDateValue(start); $("history_end").value = localDateValue(end);
+  }
+  showModal("switch_history_modal");
+  loadSwitchHistory(0);
+}
+function closeSwitchHistoryModal() { historyRequest++; hideModal("switch_history_modal"); }
+async function loadSwitchHistory(offset = 0) {
+  const request = ++historyRequest;
+  const start = new Date(`${$("history_start").value}T00:00:00`);
+  const end = new Date(`${$("history_end").value}T00:00:00`); end.setDate(end.getDate()+1);
+  const summary = $("history_summary");
+  $("history_prev").disabled = true; $("history_next").disabled = true;
+  $("history_rows").innerHTML = ""; $("history_page").textContent = "";
+  if (!Number.isFinite(+start) || !Number.isFinite(+end) || start >= end || end-start > 90*86400000+7200000) {
+    summary.textContent = "请选择有效日期范围，单次最多查询 90 天。"; return;
+  }
+  summary.textContent = "正在读取切换记录…";
+  try {
+    const query = new URLSearchParams({start:String(+start/1000),end:String(+end/1000),offset:String(offset),limit:"50",result:$("history_result").value});
+    const response = await fetchWithTimeout(`./api/switch_history?${query}`, {cache:"no-store"}, 15000);
+    const data = await readJsonResponse(response, "读取切换记录失败");
+    if (request !== historyRequest) return;
+    const triggers = {auto:"自动恢复",manual:"手动操作",startup:"启动恢复",recovery:"失败后恢复",legacy:"历史日志"};
+    const results = {success:"切换成功",reconnected:"原节点重连",failed:"连接失败",cancelled:"已取消",disconnected:"手动断开"};
+    const entries = Array.isArray(data.entries) ? data.entries : [];
+    $("history_rows").innerHTML = entries.length ? entries.map(entry => {
+      const date = new Date(Number(entry.timestamp)*1000);
+      const stamp = date.toLocaleString(undefined,{year:"numeric",month:"2-digit",day:"2-digit",hour:"2-digit",minute:"2-digit",second:"2-digit",hour12:false});
+      const statusClass = ["success","reconnected"].includes(entry.result) ? "available" : (entry.result === "failed" ? "unavailable" : "not_checked");
+      return `<tr><td>${esc(stamp)}</td><td class="mono"><div>原：${esc(entry.from_node_id || "未连接")}</div><div>→ ${esc(entry.to_node_id || "已断开")}</div></td><td>${esc(triggers[entry.trigger] || entry.trigger)}</td><td><span class="badge ${statusClass}">${esc(results[entry.result] || entry.result)}</span></td><td><div>${esc(entry.reason || "-")}</div><small>${entry.duration_ms == null ? "耗时未记录" : "操作耗时 "+esc((Number(entry.duration_ms)/1000).toFixed(2))+" 秒"}</small></td></tr>`;
+    }).join("") : '<tr><td colspan="5" style="text-align:center;padding:28px;">该日期范围内没有匹配的切换记录。</td></tr>';
+    historyOffset = Number(data.offset) || 0;
+    summary.textContent = `共 ${Number(data.total) || 0} 条记录 · ${Intl.DateTimeFormat().resolvedOptions().timeZone || "浏览器本地时间"} · 成功切换、重连和失败分别记录`;
+    $("history_page").textContent = `${Number(data.total) ? historyOffset+1 : 0}–${historyOffset+entries.length} / ${Number(data.total) || 0}`;
+    $("history_prev").disabled = historyOffset === 0; $("history_next").disabled = !data.has_more;
+  } catch (error) { if (request === historyRequest) summary.textContent = error.message || "读取切换记录失败"; }
+}
+
 function formatUrlHost(hostname) {
   const host = String(hostname || "");
   return host.includes(":") && !host.startsWith("[") ? `[${host}]` : host;
@@ -4795,6 +4895,7 @@ function closeActiveModal() {
   else if (activeModalId === "vps_recommend_modal") closeVpsModal();
   else if (activeModalId === "gateway_modal") closeGatewayModal();
   else if (activeModalId === "logs_modal") closeLogsModal();
+  else if (activeModalId === "switch_history_modal") closeSwitchHistoryModal();
 }
 document.querySelectorAll(".modal").forEach(modal => {
   modal.addEventListener("mousedown", event => {
@@ -6786,11 +6887,11 @@ def background_proxy_checker() -> None:
                                 mark_blacklisted(active_node, f"代理连通性检测失败: {error_msg}")
                                 active_node["probe_status"] = "unavailable"
                                 write_json(NODES_FILE, nodes)
-                        auto_switch_node()
+                        auto_switch_node(reason=error_msg)
                     else:
                         print(f"[代理守护线程] 固定 IP 模式下代理不可用，正在尝试重启连接同一节点: {checked_node_id}", flush=True)
                         try:
-                            connect_node(checked_node_id)
+                            connect_node(checked_node_id, trigger="auto", reason=error_msg)
                         except Exception as e:
                             print(f"[代理守护线程] 重启固定节点失败: {e}", flush=True)
         except Exception as e:
@@ -7075,6 +7176,18 @@ class Handler(BaseHTTPRequestHandler):
                     pinger_status
                 ]
             })
+        elif effective_path == "/api/switch_history":
+            try:
+                query = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query)
+                data = get_switch_history_store().read(
+                    float(query.get("start", [time.time()-7*86400])[0]),
+                    float(query.get("end", [time.time()+1])[0]),
+                    int(query.get("offset", [0])[0]), int(query.get("limit", [50])[0]),
+                    query.get("result", [""])[0],
+                )
+                self.send_json(data)
+            except (ValueError, OverflowError):
+                self.send_json({"error": "日期或分页参数无效，最多查询 90 天"}, HTTPStatus.BAD_REQUEST)
         elif effective_path == "/api/logs":
             logs_dir = DATA_DIR / "logs"
             date_str = time.strftime("%Y-%m-%d", time.localtime())
@@ -7436,6 +7549,7 @@ class Handler(BaseHTTPRequestHandler):
             except Exception as exc:
                 self.send_json({"ok": False, "error": str(exc)}, HTTPStatus.INTERNAL_SERVER_ERROR)
         elif effective_path == "/api/disconnect":
+            disconnected_node_id = active_openvpn_node_id
             try:
                 cancel_background_refill()
                 cancel_pending_connection_attempt()
@@ -7453,6 +7567,8 @@ class Handler(BaseHTTPRequestHandler):
                 global consecutive_proxy_failures, last_proxy_failure_node_id
                 consecutive_proxy_failures = 0
                 last_proxy_failure_node_id = ""
+                if disconnected_node_id:
+                    record_switch_event(disconnected_node_id, "", "manual", "disconnected", "手动断开连接")
                 self.send_json({"ok": True})
             except Exception as exc:
                 self.send_json({"ok": False, "error": str(exc)}, HTTPStatus.INTERNAL_SERVER_ERROR)
@@ -7553,6 +7669,10 @@ class Tee:
 
 def main() -> None:
     ensure_dirs()
+    try:
+        get_switch_history_store().import_legacy(DATA_DIR / "logs")
+    except Exception as exc:
+        log_to_json("WARNING", "History", f"历史切换记录导入失败: {exc}")
     if VPN_BACKEND == "softether":
         softether_backend.start()
     else:
@@ -7639,7 +7759,7 @@ def main() -> None:
         initial_node = ui_cfg.get("last_native_node_id", "")
         if ui_cfg.get("connection_enabled", True) and initial_node:
             try:
-                connect_node(str(initial_node))
+                connect_node(str(initial_node), trigger="startup", reason="服务启动，恢复上次节点")
             except Exception as exc:
                 log_to_json("WARNING", "VPN", f"恢复上次 SoftEther 节点失败: {exc}")
     threading.Thread(target=collector_loop, daemon=True).start()

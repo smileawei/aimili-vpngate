@@ -605,7 +605,7 @@ class ManagerLogicTests(unittest.TestCase):
         manager.active_openvpn_process = FakeProcess()
         with mock.patch.object(manager, "auto_switch_node") as switch:
             self.run_checker_once({"ok": False, "error": "timeout"}, threshold=1)
-        switch.assert_called_once_with()
+        switch.assert_called_once_with(reason='timeout')
         self.assertIn(nodes[0]["id"], manager.load_blacklist())
         self.assertEqual("unavailable", manager.read_nodes()[0]["probe_status"])
 
@@ -621,7 +621,7 @@ class ManagerLogicTests(unittest.TestCase):
             mock.patch.object(manager, "auto_switch_node") as switch,
         ):
             manager.maintain_valid_nodes()
-        switch.assert_called_once_with()
+        switch.assert_called_once_with(reason='timeout')
 
     def test_auto_switch_never_repeats_failed_candidate_within_round(self):
         nodes = self.write_nodes(4)
@@ -646,7 +646,7 @@ class ManagerLogicTests(unittest.TestCase):
         manager.mark_blacklisted(nodes[0], "failed exit")
         with mock.patch.object(manager, "connect_node") as connect, mock.patch.object(manager, "log_to_json"):
             manager.auto_switch_node()
-        connect.assert_called_once_with("node-1")
+        connect.assert_called_once_with("node-1", trigger="auto", reason="自动恢复可用出口")
 
     def test_inflight_probe_cannot_overwrite_newly_active_node(self):
         nodes = self.write_nodes(1)
@@ -855,7 +855,7 @@ class ManagerLogicTests(unittest.TestCase):
                 {'ok': False, 'error': 'fast timeout'},
                 {'ok': False, 'error': 'confirmation timeout'},
             ], threshold=1)
-        switch.assert_called_once_with()
+        switch.assert_called_once_with(reason='快速检测及 3 秒出口复核均失败: confirmation timeout')
         self.assertIn('3 秒出口复核均失败', manager.load_blacklist()[nodes[0]['id']]['reason'])
 
     def test_standby_uses_alternate_confirmation_before_discard(self):
@@ -927,13 +927,37 @@ class ManagerLogicTests(unittest.TestCase):
         manager.active_openvpn_node_id='node-0'
         with mock.patch.object(manager,'connect_node') as connect, mock.patch.object(manager,'log_to_json'):
             manager.auto_switch_node()
-        connect.assert_called_once_with('node-2')
+        connect.assert_called_once_with('node-2', trigger='auto', reason='自动恢复可用出口')
         cfg=manager.load_ui_config()
         cfg.update(routing_mode='favorites',favorite_node_ids=['node-1'])
         manager.write_json(manager.DATA_DIR/'ui_auth.json',cfg)
         with mock.patch.object(manager,'connect_node') as connect, mock.patch.object(manager,'log_to_json'):
             manager.auto_switch_node()
-        connect.assert_called_once_with('node-1')
+        connect.assert_called_once_with('node-1', trigger='auto', reason='自动恢复可用出口')
+
+    def test_hot_promotion_persists_transition_reason(self):
+        hot, _ = self.make_hot_spare()
+        with mock.patch.object(manager.threading, 'Thread'):
+            self.assertTrue(hot.promote(reason='confirmed exit failure'))
+        import time
+        events=manager.get_switch_history_store().read(time.time()-5,time.time()+1)['entries']
+        self.assertEqual(1,len(events))
+        self.assertEqual(('node-0','node-1','auto','success'),tuple(events[0][key] for key in ['from_node_id','to_node_id','trigger','result']))
+        self.assertEqual('confirmed exit failure',events[0]['reason'])
+
+    def test_switch_history_api_uses_auth_and_rejects_invalid_dates(self):
+        handler=object.__new__(manager.Handler)
+        handler.path='/api/switch_history?start=nan'
+        handler.validate_path=mock.Mock(return_value='/api/switch_history')
+        handler.is_authorized=mock.Mock(return_value=False)
+        handler.send_json=mock.Mock()
+        with mock.patch.object(manager,'get_switch_history_store') as store:
+            handler.do_GET()
+            store.assert_not_called()
+        self.assertEqual(401,handler.send_json.call_args.args[1])
+        handler.is_authorized.return_value=True
+        handler.do_GET()
+        self.assertEqual(400,handler.send_json.call_args.args[1])
 
     def test_proxy_failures_reset_when_node_changes(self) -> None:
         self.assertEqual(1, manager.record_proxy_failure("node-a"))
@@ -1001,7 +1025,7 @@ class ManagerLogicTests(unittest.TestCase):
         ):
             manager.recover_after_manual_connect_failure("old-node")
 
-        connect_mock.assert_called_once_with("old-node")
+        connect_mock.assert_called_once_with("old-node", trigger="recovery", reason="手动切换失败，恢复原节点")
         auto_switch_mock.assert_not_called()
 
     def test_auto_switch_exhaustion_schedules_background_refill(self) -> None:

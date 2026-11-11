@@ -19,6 +19,7 @@ RELEASE_FILES = [
     "vpn_utils.py",
     "proxy_server.py",
     "snapshot_utils.py",
+    "switch_history.py",
     "Dockerfile",
     "compose.yaml",
 ]
