@@ -1794,6 +1794,24 @@ def probe_priority_key(node: dict[str, Any]) -> tuple[int, int, int, int]:
         parse_int(node.get("sessions")),
     )
 
+def backup_priority_key(node: dict[str, Any], reference: dict[str, Any] | None = None) -> tuple:
+    region_rank = 3
+    if reference:
+        country = node.get("geo_country_short") or node.get("country_short") or normalized_country_name(node.get("country"))
+        reference_country = reference.get("geo_country_short") or reference.get("country_short") or normalized_country_name(reference.get("country"))
+        if country and str(country).casefold() == str(reference_country).casefold():
+            region_rank = 2
+            location = str(node.get("location") or "").split()
+            reference_location = str(reference.get("location") or "").split()
+            if len(location) > 1 and len(reference_location) > 1:
+                if location == reference_location:
+                    region_rank = 0
+                elif location[:2] == reference_location[:2]:
+                    region_rank = 1
+    return (region_rank,
+            0 if time.time() - float(node.get("exit_verified_at") or 0) < 1800 else 1,
+            parse_int(node.get("latency_ms")) or 999999, -parse_int(node.get("score")))
+
 def current_fixed_node_id(ui_cfg: dict[str, Any]) -> str:
     if active_openvpn_node_id:
         return active_openvpn_node_id
@@ -2204,11 +2222,9 @@ def auto_switch_node(attempt: int = 0, tried: set[str] | None = None) -> None:
         ]
         candidates = apply_routing_filters(candidates, ui_cfg)
             
-        candidates.sort(key=lambda n: (
-            0 if time.time() - float(n.get("exit_verified_at") or 0) < 1800 else 1,
-            parse_int(n.get("latency_ms")) or 999999,
-            -parse_int(n.get("score")),
-        ))
+        reference_id = active_openvpn_node_id or ui_cfg.get("last_native_node_id")
+        reference = next((n for n in nodes if n.get("id") == reference_id), None)
+        candidates.sort(key=lambda n: backup_priority_key(n, reference))
         
     if candidates:
         next_node = candidates[0]
@@ -4323,7 +4339,7 @@ INDEX_HTML = r"""<!doctype html>
   <section class="toolbar">
     <select id="status_filter">
       <option value="all">全部节点</option>
-      <option value="available">可用节点</option>
+      <option value="available" selected>可用节点</option>
       <option value="testing">检测中</option>
       <option value="unavailable">失效节点</option>
     </select>
@@ -4710,6 +4726,8 @@ let selectedDiscoveryCountries = new Set();
 let discoveryCountriesInitialized = false;
 let discoveryCountriesDirty = false;
 let countryFilterSignature = "";
+let routingFilterSignature = null;
+let routingDefaultsActive = true;
 let lastNodesSnapshotSignature = "";
 
 const $=id=>document.getElementById(id);
@@ -4938,9 +4956,35 @@ function nodeLatencyHtml(node) {
   return "-";
 }
 
+function syncDefaultFiltersFromRouting() {
+  const signature = JSON.stringify([state.routing_mode || "auto", state.force_country || "", state.routing_ip_type || "all", state.fixed_node_id || ""]);
+  if (signature === routingFilterSignature) return;
+  routingFilterSignature = signature;
+  routingDefaultsActive = true;
+  discoveryCountriesInitialized = false;
+  discoveryCountriesDirty = false;
+  $("status_filter").value = "available";
+  $("ip_type_filter").value = ["residential", "hosting"].includes(state.routing_ip_type) ? state.routing_ip_type : "";
+  showFavoritesOnly = state.routing_mode === "favorites";
+  currentPage = 1;
+  updateFavPanelUI();
+}
+
 function syncDiscoveryCountriesFromState() {
-  if (discoveryCountriesInitialized && discoveryCountriesDirty) return;
-  const saved = Array.isArray(state.discovery_countries) ? state.discovery_countries : [];
+  if (discoveryCountriesInitialized && (discoveryCountriesDirty || !routingDefaultsActive)) return;
+  let saved = Array.isArray(state.discovery_countries) ? state.discovery_countries : [];
+  if (routingDefaultsActive) {
+    let country = state.routing_mode === "fixed_region" ? state.force_country : "";
+    if (state.routing_mode === "fixed_ip") {
+      const fixed = nodes.find(n => n.id === (state.fixed_node_id || state.active_openvpn_node_id));
+      country = fixed ? fixed.country_short : "";
+    }
+    if (country) {
+      const match = nodes.find(n => n.country_short === country || n.country === country || translateCountry(n.country) === country);
+      const code = match ? match.country_short : String(country).toUpperCase();
+      saved = /^[A-Z]{2}$/.test(code) ? [code] : [];
+    }
+  }
   selectedDiscoveryCountries = new Set(
     saved
       .map(code => String(code || "").trim().toUpperCase())
@@ -5016,6 +5060,7 @@ function setCountryFilterOpen(open) {
 }
 
 function toggleDiscoveryCountry(input) {
+  routingDefaultsActive = false;
   const code = String(input.value || "").trim().toUpperCase();
   if (!/^[A-Z]{2}$/.test(code)) return;
   if (input.checked) selectedDiscoveryCountries.add(code);
@@ -5027,6 +5072,7 @@ function toggleDiscoveryCountry(input) {
 }
 
 function clearDiscoveryCountries(event) {
+  routingDefaultsActive = false;
   if (event) event.stopPropagation();
   selectedDiscoveryCountries.clear();
   discoveryCountriesDirty = true;
@@ -5043,6 +5089,9 @@ function getFilteredNodes() {
   const selectedStatus = $("status_filter").value;
   return nodes.filter(n => {
     if (!n) return false;
+    if (routingDefaultsActive && state.routing_mode === "fixed_region" && state.force_country && ![n.country_short, n.country, translateCountry(n.country)].includes(state.force_country)) return false;
+    if (routingDefaultsActive && state.routing_mode === "fixed_ip" && n.id !== (state.fixed_node_id || state.active_openvpn_node_id)) return false;
+    if (routingDefaultsActive && selectedIpType === "residential" && !["medium", "high"].includes(n.ip_type_confidence)) return false;
     const countryCode = String(n.country_short || "").trim().toUpperCase();
     if (selectedDiscoveryCountries.size && !selectedDiscoveryCountries.has(countryCode)) {
       return false;
@@ -5455,6 +5504,7 @@ function applyNodesSnapshot(data) {
   lastNodesSnapshotSignature = signature;
   nodes = nextNodes;
   state = nextState;
+  syncDefaultFiltersFromRouting();
   stableSortNodes();
   updateCountryFilter();
   render();
@@ -5624,8 +5674,8 @@ document.addEventListener("keydown", event => {
     if (wasOpen) $("country_filter_button").focus();
   }
 });
-$("ip_type_filter").onchange=()=>{ currentPage = 1; render(); };
-$("status_filter").onchange=()=>{ currentPage = 1; render(); };
+$("ip_type_filter").onchange=()=>{ routingDefaultsActive = false; currentPage = 1; render(); };
+$("status_filter").onchange=()=>{ routingDefaultsActive = false; currentPage = 1; render(); };
 
 $("refresh").onclick=async()=>{
   refreshButtonBusy("正在启动更新...");
@@ -5784,6 +5834,7 @@ document.addEventListener("keydown", event => {
 let showFavoritesOnly = false;
 
 function toggleFavoritesView() {
+  routingDefaultsActive = false;
   showFavoritesOnly = !showFavoritesOnly;
   currentPage = 1;
   render();

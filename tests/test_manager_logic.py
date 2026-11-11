@@ -906,6 +906,35 @@ class ManagerLogicTests(unittest.TestCase):
         self.assertIsNone(status['standby_node'])
         self.assertEqual('', status['standby_node_id'])
 
+    def test_backup_sort_prefers_city_then_region_then_country(self):
+        ref = {'country_short':'JP', 'location':'日本 爱知县 名古屋市'}
+        nodes = [
+            {'id':'other', 'country_short':'KR', 'latency_ms':1},
+            {'id':'country', 'country_short':'JP', 'location':'日本 东京都 东京', 'latency_ms':2},
+            {'id':'region', 'country_short':'JP', 'location':'日本 爱知县 丰田市', 'latency_ms':3},
+            {'id':'city', 'country_short':'JP', 'location':'日本 爱知县 名古屋市', 'latency_ms':500},
+        ]
+        ordered=sorted(nodes,key=lambda n:manager.backup_priority_key(n,ref))
+        self.assertEqual(['city','region','country','other'],[n['id'] for n in ordered])
+        self.assertEqual('other',min(nodes,key=lambda n:manager.backup_priority_key(n))['id'])
+
+    def test_auto_switch_region_preference_respects_routing_limits(self):
+        nodes=self.write_nodes(3)
+        nodes[0].update(active=True,country_short='JP',location='日本 爱知县 名古屋市')
+        nodes[1].update(probe_status='available',country_short='KR',latency_ms=1)
+        nodes[2].update(probe_status='available',country_short='JP',location='日本 爱知县 名古屋市',latency_ms=500)
+        manager.write_json(manager.NODES_FILE,nodes)
+        manager.active_openvpn_node_id='node-0'
+        with mock.patch.object(manager,'connect_node') as connect, mock.patch.object(manager,'log_to_json'):
+            manager.auto_switch_node()
+        connect.assert_called_once_with('node-2')
+        cfg=manager.load_ui_config()
+        cfg.update(routing_mode='favorites',favorite_node_ids=['node-1'])
+        manager.write_json(manager.DATA_DIR/'ui_auth.json',cfg)
+        with mock.patch.object(manager,'connect_node') as connect, mock.patch.object(manager,'log_to_json'):
+            manager.auto_switch_node()
+        connect.assert_called_once_with('node-1')
+
     def test_proxy_failures_reset_when_node_changes(self) -> None:
         self.assertEqual(1, manager.record_proxy_failure("node-a"))
         self.assertEqual(2, manager.record_proxy_failure("node-a"))

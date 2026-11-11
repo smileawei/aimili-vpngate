@@ -94,10 +94,12 @@ class HotStandby:
         if not self.m.active_openvpn_running() or self.m.is_connecting:
             return
         blacklist = self.m.load_blacklist()
-        candidates = [n for n in self.m.read_nodes() if n.get('probe_status') == 'available'
+        nodes = self.m.read_nodes()
+        candidates = [n for n in nodes if n.get('probe_status') == 'available'
                       and n['id'] not in blacklist and self.allowed(n, cfg)
                       and self.cooldown.get(n['id'], 0) < time.monotonic()]
-        candidates.sort(key=lambda n: self.m.parse_int(n.get('latency_ms')) or 999999)
+        reference = next((n for n in nodes if n['id'] == self.m.active_openvpn_node_id), None)
+        candidates.sort(key=lambda n: self.m.backup_priority_key(n, reference))
         if not candidates:
             self.m.set_state(standby_node_id='', standby_ready=False)
             return
