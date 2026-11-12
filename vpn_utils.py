@@ -285,7 +285,9 @@ def get_physical_interface() -> str | None:
         return detected
 
 def tcp_latency_ms(host: str, port: int, dev: str | None = None) -> int:
-    started = time.time()
+    if dev is None:
+        dev = get_physical_interface()
+    started = time.monotonic()
     # Auto-detect address family based on host address
     af = socket.AF_INET6 if ":" in host else socket.AF_INET
     s = None
@@ -298,7 +300,7 @@ def tcp_latency_ms(host: str, port: int, dev: str | None = None) -> int:
             except OSError:
                 pass
         s.connect((host, port))
-        return max(1, int((time.time() - started) * 1000))
+        return max(1, int((time.monotonic() - started) * 1000))
     except OSError:
         return 0
     finally:

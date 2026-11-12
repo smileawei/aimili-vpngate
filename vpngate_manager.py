@@ -1951,7 +1951,6 @@ def test_node_by_id(node_id: str) -> dict[str, Any]:
         config_text = node.get("config_text") or ""
         h = str(node.get("remote_host") or node.get("ip"))
         p = parse_int(node.get("remote_port"))
-        fallback_ping = parse_int(node.get("ping"))
 
     temp_path = test_config_path(node_id)
     try:
@@ -1960,15 +1959,12 @@ def test_node_by_id(node_id: str) -> dict[str, Any]:
     except Exception as e:
         raise RuntimeError(f"Failed to write temp config file: {e}")
 
-    latency = 0 if VPN_BACKEND == "softether" else vpn_utils.ping_latency_ms(h, p, fallback_ping)
+    latency = vpn_utils.tcp_latency_ms(h, p)
     
     idx = None
     try:
         idx = get_free_test_index()
-        started = time.monotonic()
         ok, message, _ = run_openvpn_until_ready(str(temp_path), keep_alive=False, route_nopull=True, timeout=NODE_EXIT_PROBE_TIMEOUT_SECONDS if VPN_BACKEND == "softether" else 12, dev=f"tun{idx}")
-        if VPN_BACKEND == "softether" and ok:
-            latency = max(1, int((time.monotonic() - started) * 1000))
     finally:
         if idx is not None:
             release_test_index(idx)
@@ -2043,7 +2039,6 @@ def test_multiple_nodes(node_ids: list[str], target_available: int | None = None
         config_text = n_info.get("config_text") or ""
         h = str(n_info.get("remote_host") or n_info.get("ip"))
         p = parse_int(n_info.get("remote_port"))
-        fallback_ping = parse_int(n_info.get("ping"))
         
         temp_path = test_config_path(node_id)
         try:
@@ -2058,15 +2053,12 @@ def test_multiple_nodes(node_ids: list[str], target_available: int | None = None
                 "probed_at": time.time(),
             }
             
-        latency = 0 if VPN_BACKEND == "softether" else vpn_utils.ping_latency_ms(h, p, fallback_ping)
+        latency = vpn_utils.tcp_latency_ms(h, p)
         tun_idx = None
         try:
             tun_idx = get_free_test_index()
             dev_name = f"tun{tun_idx}"
-            started = time.monotonic()
             ok, message, _ = run_openvpn_until_ready(str(temp_path), keep_alive=False, route_nopull=True, timeout=NODE_EXIT_PROBE_TIMEOUT_SECONDS if VPN_BACKEND == "softether" else 12, dev=dev_name)
-            if VPN_BACKEND == "softether" and ok:
-                latency = max(1, int((time.monotonic() - started) * 1000))
         finally:
             if tun_idx is not None:
                 release_test_index(tun_idx)
@@ -2434,12 +2426,11 @@ def connect_node(node_id: str, *, trigger: str = "manual", reason: str = "手动
         last_active_ping_time = time.time()
         last_active_latency = 0
         
-        set_state(active_node_latency="测试延迟", last_check_message="正在直连测试代理出口延迟与可用性...")
+        set_state(active_node_latency="测试延迟", last_check_message="正在测试本机到节点的 TCP 延迟...")
         try:
             ip = node.get("ip") or node.get("remote_host")
             port = parse_int(node.get("remote_port"))
-            fallback = parse_int(node.get("ping"))
-            latency = 0 if VPN_BACKEND == "softether" else vpn_utils.ping_latency_ms(ip, port, fallback)
+            latency = vpn_utils.tcp_latency_ms(ip, port)
             if latency > 0:
                 last_active_latency = latency
         except Exception:
@@ -2461,8 +2452,6 @@ def connect_node(node_id: str, *, trigger: str = "manual", reason: str = "手动
         if latest_ui_cfg.get("routing_mode") == "fixed_ip":
             latest_ui_cfg["fixed_node_id"] = node_id
 
-        if VPN_BACKEND == "softether":
-            last_active_latency = res["latency_ms"]
         latency_str = f"{last_active_latency} ms" if last_active_latency > 0 else "检测超时"
         with lock:
             if not connection_attempt_is_current(token, cancel_event):
@@ -2471,6 +2460,7 @@ def connect_node(node_id: str, *, trigger: str = "manual", reason: str = "手动
             for item in current_nodes:
                 item["active"] = item.get("id") == node_id
                 if item["active"]:
+                    item["latency_ms"] = last_active_latency
                     item["probe_status"] = "available"
                     item["probed_at"] = time.time()
                     item["exit_verified_at"] = time.time()
@@ -5120,7 +5110,7 @@ function countryFlag(countryShort) {
 function nodeLatencyHtml(node) {
   const measured = Number(node && node.latency_ms) || 0;
   if (measured > 0) {
-    return `<span class="latency-val ${getLatencyClass(measured)}" title="本机实测延迟">${measured} ms</span>`;
+    return `<span class="latency-val ${getLatencyClass(measured)}" title="本机直连节点的网络延迟：TCP 建连耗时；不含 VPN 握手、DHCP 和出口验证，也不经过上游代理">${measured} ms</span>`;
   }
   const estimated = Number(node && node.ping) || 0;
   if (estimated > 0) {
@@ -5427,7 +5417,7 @@ function render(){
           <div class="active-card-title"><span class="badge ${standbyStatus === "ready" ? "standby" : "testing"}">${esc(standbyLabels[standbyStatus] || "正在准备")}</span>
             <strong>${standbyNode && !standbyDisabled ? esc(translateCountry(standbyNode.country)) : "备用连接"}</strong></div>
           <div class="active-card-value mono" style="font-size:20px;">${esc(standbyDisabled ? "未启用" : standbyAddress)}</div>
-          ${standbyNode && !standbyDisabled ? `<div class="active-card-meta"><span>运营主体: <strong>${esc(standbyNode.owner || standbyNode.as_name || "-")}</strong></span><span>IP 类型: <strong>${esc(translateIpType(standbyNode.ip_type))}</strong></span>${state.standby_latency_ms != null ? `<span>出口延时: <strong>${esc(state.standby_latency_ms)} ms</strong></span>` : ""}</div>` : ""}
+          ${standbyNode && !standbyDisabled ? `<div class="active-card-meta"><span>运营主体: <strong>${esc(standbyNode.owner || standbyNode.as_name || "-")}</strong></span><span>IP 类型: <strong>${esc(translateIpType(standbyNode.ip_type))}</strong></span>${state.standby_latency_ms != null ? `<span>出口请求耗时: <strong>${esc(state.standby_latency_ms)} ms</strong></span>` : ""}</div>` : ""}
           <div class="role-note">${esc(standbyNote)}</div>
         </div>
       </div>
@@ -5475,7 +5465,7 @@ function render(){
         pBadge.textContent = "可用";
         pIpVal.textContent = state.proxy_ip || "-";
         const latencyClass = getLatencyClass(state.proxy_latency_ms);
-        pLatVal.innerHTML = `<span class="latency-val ${latencyClass}" style="margin-left:8px;">${state.proxy_latency_ms} ms</span>`;
+        pLatVal.innerHTML = `<span class="latency-val ${latencyClass}" style="margin-left:8px;">请求耗时 ${state.proxy_latency_ms} ms</span>`;
       } else {
         pBadge.className = "badge unavailable";
         pBadge.textContent = "不可用";
@@ -5898,7 +5888,7 @@ $("btn_test_proxy").onclick = async () => {
       ipVal.textContent = result.ip || "-";
       
       const latencyClass = getLatencyClass(result.latency_ms);
-      latVal.innerHTML = `<span class="latency-val ${latencyClass}" style="margin-left:8px;">${result.latency_ms} ms</span>`;
+      latVal.innerHTML = `<span class="latency-val ${latencyClass}" style="margin-left:8px;">请求耗时 ${result.latency_ms} ms</span>`;
     } else {
       badge.className = "badge unavailable";
       badge.textContent = "不可用";
@@ -6990,9 +6980,8 @@ def active_node_pinger() -> None:
                 if node:
                     ip = node.get("ip") or node.get("remote_host")
                     port = parse_int(node.get("remote_port"))
-                    fallback = parse_int(node.get("ping"))
                     if ip:
-                        latency = parse_int(get_state().get("proxy_latency_ms")) if VPN_BACKEND == "softether" else vpn_utils.ping_latency_ms(ip, port, fallback)
+                        latency = vpn_utils.tcp_latency_ms(ip, port)
                         if latency > 0:
                             set_state(active_node_latency=f"{latency} ms")
                         else:
@@ -7120,21 +7109,19 @@ class Handler(BaseHTTPRequestHandler):
                     now = time.time()
                     if now - last_active_ping_time > 15.0:
                         last_active_ping_time = now
-                        def bg_ping(ip_addr: str, port: int, fallback: int) -> None:
+                        def bg_ping(ip_addr: str, port: int) -> None:
                             global last_active_latency
                             try:
-                                latency = parse_int(get_state().get("proxy_latency_ms")) if VPN_BACKEND == "softether" else vpn_utils.ping_latency_ms(ip_addr, port, fallback)
-                                if latency > 0:
-                                    last_active_latency = latency
+                                latency = vpn_utils.tcp_latency_ms(ip_addr, port)
+                                last_active_latency = latency
                             except Exception:
                                 pass
                         threading.Thread(
                             target=bg_ping, 
-                            args=(ip, parse_int(active_node.get("remote_port")), parse_int(active_node.get("ping"))),
+                            args=(ip, parse_int(active_node.get("remote_port"))),
                             daemon=True
                         ).start()
-                    if last_active_latency > 0:
-                        active_node["latency_ms"] = last_active_latency
+                    active_node["latency_ms"] = last_active_latency
             stripped_nodes = []
             for n in nodes:
                 stripped = n.copy()

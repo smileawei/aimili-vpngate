@@ -140,6 +140,45 @@ class ManagerLogicTests(unittest.TestCase):
         manager.write_json(manager.NODES_FILE, nodes)
         return nodes
 
+    def test_softether_probes_store_network_latency(self) -> None:
+        for batch in (False, True):
+            with self.subTest(batch=batch):
+                nodes = self.write_nodes(1)
+                nodes[0]["proto"] = "tcp"
+                manager.write_json(manager.NODES_FILE, nodes)
+                with (
+                    mock.patch.object(manager, "VPN_BACKEND", "softether"),
+                    mock.patch.object(manager.vpn_utils, "tcp_latency_ms", return_value=42) as tcp,
+                    mock.patch.object(manager.vpn_utils, "ping_latency_ms", side_effect=AssertionError("TCP latency must not use Ping")),
+                    mock.patch.object(manager.vpn_utils, "enrich_ip_info"),
+                    mock.patch.object(manager, "run_openvpn_until_ready", return_value=(True, "ready", None)) as probe,
+                ):
+                    if batch:
+                        manager.test_multiple_nodes([nodes[0]["id"]])
+                    else:
+                        manager.test_node_by_id(nodes[0]["id"])
+                stored = manager.read_nodes()[0]
+                self.assertEqual(42, stored["latency_ms"])
+                self.assertEqual("available", stored["probe_status"])
+                self.assertGreater(stored["exit_verified_at"], 0)
+                tcp.assert_called_once_with(nodes[0]["remote_host"], nodes[0]["remote_port"])
+                probe.assert_called_once()
+
+    def test_softether_failed_network_measurement_is_not_probe_duration(self) -> None:
+        nodes = self.write_nodes(1)
+        nodes[0]["proto"] = "tcp"
+        manager.write_json(manager.NODES_FILE, nodes)
+        with (
+            mock.patch.object(manager, "VPN_BACKEND", "softether"),
+            mock.patch.object(manager.vpn_utils, "tcp_latency_ms", return_value=0),
+            mock.patch.object(manager.vpn_utils, "enrich_ip_info"),
+            mock.patch.object(manager, "run_openvpn_until_ready", return_value=(True, "ready", None)),
+        ):
+            result = manager.test_node_by_id(nodes[0]["id"])
+        self.assertEqual(0, result["latency_ms"])
+        self.assertEqual("available", result["probe_status"])
+        self.assertEqual(nodes[0]["ping"], result["ping"])
+
     def test_node_probe_stops_after_target_batch(self) -> None:
         nodes = self.write_nodes(12)
         calls = []
@@ -149,7 +188,7 @@ class ManagerLogicTests(unittest.TestCase):
             return True, "ready", None
 
         with (
-            mock.patch.object(manager.vpn_utils, "ping_latency_ms", return_value=10),
+            mock.patch.object(manager.vpn_utils, "tcp_latency_ms", return_value=10),
             mock.patch.object(manager.vpn_utils, "enrich_ip_info"),
             mock.patch.object(manager, "run_openvpn_until_ready", side_effect=fake_openvpn),
             mock.patch.object(manager, "NODE_PROBE_WORKERS", 5),
@@ -430,7 +469,7 @@ class ManagerLogicTests(unittest.TestCase):
         manager.write_json(manager.NODES_FILE, nodes)
 
         with (
-            mock.patch.object(manager.vpn_utils, "ping_latency_ms", return_value=0),
+            mock.patch.object(manager.vpn_utils, "tcp_latency_ms", return_value=0),
             mock.patch.object(manager, "run_openvpn_until_ready", return_value=(False, "offline", None)),
         ):
             manager.test_multiple_nodes([nodes[0]["id"]])
@@ -510,7 +549,7 @@ class ManagerLogicTests(unittest.TestCase):
         nodes = self.write_nodes(12)
 
         with (
-            mock.patch.object(manager.vpn_utils, "ping_latency_ms", return_value=10),
+            mock.patch.object(manager.vpn_utils, "tcp_latency_ms", return_value=10),
             mock.patch.object(
                 manager,
                 "run_openvpn_until_ready",
@@ -535,7 +574,7 @@ class ManagerLogicTests(unittest.TestCase):
 
         with (
             mock.patch.object(manager, "fetch_candidates", return_value=candidates),
-            mock.patch.object(manager.vpn_utils, "ping_latency_ms", return_value=10),
+            mock.patch.object(manager.vpn_utils, "tcp_latency_ms", return_value=10),
             mock.patch.object(
                 manager,
                 "run_openvpn_until_ready",
@@ -657,7 +696,7 @@ class ManagerLogicTests(unittest.TestCase):
             return False, "stale failure", None
         with (
             mock.patch.object(manager, "run_openvpn_until_ready", side_effect=ready),
-            mock.patch.object(manager.vpn_utils, "ping_latency_ms", return_value=10),
+            mock.patch.object(manager.vpn_utils, "tcp_latency_ms", return_value=10),
         ):
             manager.test_multiple_nodes([nodes[0]["id"]])
         self.assertEqual("available", manager.read_nodes()[0]["probe_status"])
@@ -983,7 +1022,7 @@ class ManagerLogicTests(unittest.TestCase):
             mock.patch.object(manager,'run_openvpn_until_ready',return_value=(True,'ready',FakeProcess())),
             mock.patch.object(manager,'setup_policy_routing',return_value=True),
             mock.patch.object(manager,'cleanup_policy_routing'),
-            mock.patch.object(manager.vpn_utils,'ping_latency_ms',return_value=10),
+            mock.patch.object(manager.vpn_utils,'tcp_latency_ms',return_value=10),
             mock.patch.object(manager,'check_proxy_health',return_value={'ok':True,'ip':'203.0.113.2','latency_ms':10}),
             mock.patch.object(manager,'log_to_json'),
         ):
@@ -1035,7 +1074,7 @@ class ManagerLogicTests(unittest.TestCase):
             ),
             mock.patch.object(manager, "setup_policy_routing", return_value=False),
             mock.patch.object(manager, "cleanup_policy_routing"),
-            mock.patch.object(manager.vpn_utils, "ping_latency_ms", return_value=10),
+            mock.patch.object(manager.vpn_utils, "tcp_latency_ms", return_value=10),
             mock.patch.object(manager, "check_proxy_health", return_value={"ok": False, "error": "no route"}),
             mock.patch.object(manager, "log_to_json"),
         ):
