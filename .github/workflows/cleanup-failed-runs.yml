@@ -1,0 +1,40 @@
+name: Clean up failed workflow runs
+
+on:
+  push:
+    branches: [main]
+    paths: [.github/workflows/cleanup-failed-runs.yml]
+  workflow_dispatch:
+
+permissions:
+  actions: write
+
+concurrency:
+  group: cleanup-failed-runs
+  cancel-in-progress: false
+
+jobs:
+  cleanup:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Delete failed runs and preserve other results
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          # Snapshot IDs before deleting so pagination cannot skip any runs.
+          gh api --paginate \
+            "repos/$GITHUB_REPOSITORY/actions/runs?status=failure&per_page=100" \
+            --jq '.workflow_runs[].id' > "$RUNNER_TEMP/failed-run-ids.txt"
+          deleted=0
+          while IFS= read -r run_id; do
+            conclusion="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$run_id" --jq '.conclusion')"
+            if [ "$conclusion" = failure ]; then
+              gh api --method DELETE "repos/$GITHUB_REPOSITORY/actions/runs/$run_id"
+              deleted=$((deleted + 1))
+              echo "Deleted failed run $run_id"
+            fi
+          done < "$RUNNER_TEMP/failed-run-ids.txt"
+          echo "Deleted $deleted failed workflow runs; preserved all other results." >> "$GITHUB_STEP_SUMMARY"
