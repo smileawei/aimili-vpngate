@@ -7,11 +7,11 @@ services:
   aimilivpn:
     profiles:
       - legacy-openvpn
-    image: aimili-vpngate:2.2.1-local
+    image: aimili-vpngate:2.2.3-local
     build:
       context: .
       args:
-        BUILD_VERSION: "2.2.1"
+        BUILD_VERSION: "2.2.3"
     cap_drop:
       - ALL
     cap_add:

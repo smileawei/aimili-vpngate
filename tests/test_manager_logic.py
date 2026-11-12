@@ -1316,6 +1316,74 @@ class ManagerLogicTests(unittest.TestCase):
             self.assertEqual("", manager.load_ui_config()["softether_upstream_proxy"])
             self.assertFalse(manager.get_state()["softether_upstream_proxy_set"])
 
+    def test_proxy_auth_web_save_preserve_disable_and_reload(self):
+        with (
+            mock.patch.object(proxy_server, "_configured_credentials", None),
+            mock.patch.dict(os.environ, {"LOCAL_PROXY_USER": "env-user", "LOCAL_PROXY_PASS": "env-pass"}),
+            mock.patch.object(manager, "enforce_active_node_allowed_by_routing", return_value=""),
+        ):
+            self.assertEqual(("env-user", "env-pass"), proxy_server.get_proxy_credentials())
+            handler = self.upstream_settings_request(
+                local_proxy_auth_enabled=True, local_proxy_username="代理用户", local_proxy_password="新密码🔒")
+            handler.do_POST()
+            self.assertEqual({"ok": True, "restart_needed": False, "message": "配置更新成功，已即时生效！"}, handler.send_json.call_args.args[0])
+            self.assertTrue(proxy_server.check_credentials("代理用户", "新密码🔒"))
+            self.assertFalse(proxy_server.check_credentials("代理用户", "wrong"))
+            self.assertFalse(proxy_server.check_credentials(None, None))
+            state = manager.get_state()
+            self.assertTrue(state["local_proxy_auth_enabled"])
+            self.assertTrue(state["local_proxy_password_set"])
+            self.assertNotIn("新密码", json.dumps(state, ensure_ascii=False))
+            self.assertEqual(0o600, stat.S_IMODE((manager.DATA_DIR / "ui_auth.json").stat().st_mode))
+
+            handler = self.upstream_settings_request(
+                local_proxy_auth_enabled=True, local_proxy_username="changed", local_proxy_password="")
+            handler.do_POST()
+            self.assertEqual(("changed", "新密码🔒"), proxy_server.get_proxy_credentials())
+            proxy_server.configure_proxy_auth({})
+            proxy_server.configure_proxy_auth(manager.load_ui_config())
+            self.assertEqual(("changed", "新密码🔒"), proxy_server.get_proxy_credentials())
+
+            handler = self.upstream_settings_request(local_proxy_auth_enabled=False, local_proxy_username="changed")
+            handler.do_POST()
+            self.assertFalse(proxy_server.proxy_auth_enabled())
+            proxy_server.configure_proxy_auth(manager.load_ui_config())
+            self.assertFalse(proxy_server.proxy_auth_enabled())
+            handler = self.upstream_settings_request()
+            handler.do_POST()
+            self.assertFalse(proxy_server.proxy_auth_enabled())
+
+    def test_proxy_auth_web_rejects_invalid_and_unauthorized_changes(self):
+        with mock.patch.object(proxy_server, "_configured_credentials", (None, None)):
+            for updates in (
+                {"local_proxy_auth_enabled": "false"},
+                {"local_proxy_username": "user"},
+                {"local_proxy_username": ""},
+                {"local_proxy_password": ""},
+                {"local_proxy_username": "a:b"},
+                {"local_proxy_username": "u\nx"},
+                {"local_proxy_password": "p\x00x"},
+                {"local_proxy_username": "中" * 86},
+                {"local_proxy_password": "x" * 256},
+                {"local_proxy_password": []},
+                {"local_proxy_username": None},
+            ):
+                with self.subTest(updates=updates):
+                    payload = dict(local_proxy_auth_enabled=True, local_proxy_username="user", local_proxy_password="pass")
+                    payload.update(updates)
+                    if updates == {"local_proxy_username": "user"}:
+                        payload.pop("local_proxy_auth_enabled")
+                    handler = self.upstream_settings_request(**payload)
+                    handler.do_POST()
+                    self.assertEqual(400, handler.send_json.call_args.args[1])
+                    self.assertNotIn("local_proxy_auth_enabled", manager.load_ui_config())
+                    self.assertFalse(proxy_server.proxy_auth_enabled())
+            handler = self.upstream_settings_request(local_proxy_auth_enabled=False)
+            handler.is_authorized.return_value = False
+            handler.do_POST()
+            self.assertEqual(401, handler.send_json.call_args.args[1])
+            handler.read_json_body.assert_not_called()
+
     def test_upstream_web_rejects_invalid_and_unauthorized_changes(self):
         with mock.patch.object(manager, "VPN_BACKEND", "softether"):
             for value in ("socks5://host", "https://host:443", "socks5://host:99999", "http://host:80/path", "http://host:80?query", "socks5://host:1080\ninvalid", None):
@@ -1373,8 +1441,8 @@ class ManagerLogicTests(unittest.TestCase):
         self.assertEqual(519, entries[-1]["index"])
 
     def test_web_update_controls_only_expose_stable_main_channel(self) -> None:
-        self.assertEqual("2.2.2", manager.APP_VERSION)
-        self.assertEqual("V2.2.2 正式版", manager.APP_VERSION_LABEL)
+        self.assertEqual("2.2.3", manager.APP_VERSION)
+        self.assertEqual("V2.2.3 正式版", manager.APP_VERSION_LABEL)
         self.assertIn("检测更新", manager.INDEX_HTML)
         self.assertIn("/api/check_update", manager.INDEX_HTML)
         self.assertIn("/tree/main", manager.INDEX_HTML)
@@ -1419,7 +1487,7 @@ class ManagerLogicTests(unittest.TestCase):
     def test_release_workflow_uses_full_patch_version(self) -> None:
         workflow_text = (manager.ROOT_DIR / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
 
-        self.assertIn("default: v2.2.2", workflow_text)
+        self.assertIn("default: v2.2.3", workflow_text)
         self.assertIn("AimiliVPN V$(tr -d '\\r\\n' < VERSION) 正式版", workflow_text)
         self.assertNotIn("cut -d. -f1,2 VERSION", workflow_text)
 
@@ -1446,8 +1514,8 @@ class ManagerLogicTests(unittest.TestCase):
 
     def test_latest_release_check_reports_current_formal_version(self) -> None:
         release = {
-            "tag_name": "v2.2.2",
-            "name": "AimiliVPN V2.2.2 正式版",
+            "tag_name": "v2.2.3",
+            "name": "AimiliVPN V2.2.3 正式版",
             "draft": False,
             "prerelease": False,
         }
@@ -1455,10 +1523,10 @@ class ManagerLogicTests(unittest.TestCase):
             result = manager.check_latest_release()
 
         self.assertFalse(result["update_available"])
-        self.assertEqual("V2.2.2 正式版", result["current_version_label"])
+        self.assertEqual("V2.2.3 正式版", result["current_version_label"])
 
     def test_latest_release_check_reports_source_update_command(self) -> None:
-        release = {"tag_name": "v2.2.2", "draft": False, "prerelease": False}
+        release = {"tag_name": "v2.2.3", "draft": False, "prerelease": False}
         with (
             mock.patch.object(manager, "fetch_api_text", return_value=json.dumps(release)),
             mock.patch.object(manager, "DEPLOYMENT_MODE", "source"),
@@ -1471,7 +1539,7 @@ class ManagerLogicTests(unittest.TestCase):
         self.assertEqual("ml update", result["update_command"])
 
     def test_latest_release_check_reports_docker_update_command(self) -> None:
-        release = {"tag_name": "v2.2.2", "draft": False, "prerelease": False}
+        release = {"tag_name": "v2.2.3", "draft": False, "prerelease": False}
         with (
             mock.patch.object(manager, "fetch_api_text", return_value=json.dumps(release)),
             mock.patch.object(manager, "DEPLOYMENT_MODE", "docker"),
@@ -1580,6 +1648,43 @@ class ManagerLogicTests(unittest.TestCase):
 
 
 class ProxyServerConcurrencyTests(unittest.TestCase):
+    def test_saved_auth_is_enforced_by_both_proxy_protocols(self):
+        def client_with(data):
+            client = mock.Mock()
+            incoming = bytearray(data)
+            def recv(size):
+                chunk = incoming[:size]
+                del incoming[:size]
+                return bytes(chunk)
+            client.recv.side_effect = recv
+            return client
+
+        with mock.patch.object(proxy_server, "_configured_credentials", ("user", "pass")), \
+                mock.patch.object(proxy_server, "create_connection") as connect, \
+                mock.patch.object(proxy_server, "relay"):
+            client = client_with(b"\x01\x00")
+            proxy_server.socks5_client(client, b"\x05")
+            client.sendall.assert_called_once_with(b"\x05\xff")
+            connect.assert_not_called()
+            client = client_with(b"\x01\x02\x01\x04user\x05wrong")
+            proxy_server.socks5_client(client, b"\x05")
+            self.assertEqual(b"\x01\x01", client.sendall.call_args.args[0])
+            connect.assert_not_called()
+            client = client_with(b"\x01\x02\x01\x04user\x04pass\x05\x01\x00\x01\xc0\x00\x02\x01\x01\xbb")
+            proxy_server.socks5_client(client, b"\x05")
+            connect.assert_called_once_with(("192.0.2.1", 443), timeout=20)
+            self.assertEqual(b"\x01\x00", client.sendall.call_args_list[1].args[0])
+            connect.reset_mock()
+            for auth in (b"", b"Proxy-Authorization: Basic dXNlcjp3cm9uZw==\r\n"):
+                client = client_with(b"ONNECT example.com:443 HTTP/1.1\r\n" + auth + b"\r\n")
+                proxy_server.http_client(client, b"C")
+                self.assertIn(b"407 Proxy Authentication Required", client.sendall.call_args.args[0])
+                connect.assert_not_called()
+            client = client_with(b"ONNECT example.com:443 HTTP/1.1\r\nProxy-Authorization: Basic dXNlcjpwYXNz\r\n\r\n")
+            proxy_server.http_client(client, b"C")
+            connect.assert_called_once_with(("example.com", 443), timeout=20)
+            client.sendall.assert_called_once_with(b"HTTP/1.1 200 Connection Established\r\n\r\n")
+
     def test_socks5_rejects_client_without_no_auth_method(self) -> None:
         class Client:
             def __init__(self):

@@ -62,7 +62,23 @@ def parse_host_port(authority: str, default_port: int) -> tuple[str, int]:
         return host, parse_int(port_text) or default_port
     return authority, default_port
 
+_configured_credentials: tuple[str | None, str | None] | None = None
+
+
+def configure_proxy_auth(config: dict[str, Any]) -> None:
+    """Saved Web settings take precedence; older configs retain environment defaults."""
+    global _configured_credentials
+    if "local_proxy_auth_enabled" not in config:
+        _configured_credentials = None
+    elif config["local_proxy_auth_enabled"]:
+        _configured_credentials = (config["local_proxy_username"], config["local_proxy_password"])
+    else:
+        _configured_credentials = (None, None)
+
+
 def get_proxy_credentials() -> tuple[str | None, str | None]:
+    if _configured_credentials is not None:
+        return _configured_credentials
     user = os.environ.get("LOCAL_PROXY_USER") or os.environ.get("LOCAL_PROXY_USERNAME")
     password = os.environ.get("LOCAL_PROXY_PASS") or os.environ.get("LOCAL_PROXY_PASSWORD")
     if user is None and password is None:
@@ -95,7 +111,7 @@ def check_credentials(username: str | None, password: str | None) -> bool:
     expected_user, expected_pass = get_proxy_credentials()
     if expected_user is None or expected_pass is None:
         return True
-    return secrets.compare_digest(username or "", expected_user) and secrets.compare_digest(password or "", expected_pass)
+    return secrets.compare_digest((username or "").encode("utf-8"), expected_user.encode("utf-8")) and secrets.compare_digest((password or "").encode("utf-8"), expected_pass.encode("utf-8"))
 
 def dns_query_over_tun0(host: str, qtype: int, dns_server: str, timeout: float) -> str | None:
     import random

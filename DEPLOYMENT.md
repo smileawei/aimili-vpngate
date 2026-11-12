@@ -15,6 +15,21 @@ docker compose logs --tail=100 softether
 SoftEther 只使用 TCP 候选记录，检测与正式连接均使用相同的上游代理。
 当前源码及 Compose 默认不配置上游代理，直接连接节点。
 
+## Web 配置 HTTP/SOCKS5 代理认证
+
+从 `2.2.3` 起，可在 Web 后台 **代理设置** 中勾选 **启用 HTTP/SOCKS5 代理认证**，填写代理用户名和密码后保存。
+HTTP CONNECT 和 SOCKS5 共用这组凭据，与 Web 登录账号独立；默认代理端口为 `7929`。
+首次启用必须填写用户名和密码；密码留空保留原值，不会回显。关闭认证后无需账号密码。
+保存后立即用于新连接，已有连接继续使用；配置保存在 `data/ui_auth.json`，重启、重建容器后保留。
+Web 保存的认证配置优先于 `LOCAL_PROXY_USER` / `LOCAL_PROXY_PASS`（也支持 `LOCAL_PROXY_USERNAME` / `LOCAL_PROXY_PASSWORD`）；从未保存该项配置时继续使用环境变量。
+用户名、密码各限 1～255 个 UTF-8 字节，不允许控制字符，用户名不能包含冒号。
+
+验证时让 curl 提示输入代理密码：
+
+```bash
+curl --max-time 20 --proxy socks5h://127.0.0.1:7929 --proxy-user '你的用户名' https://api.ipify.org
+```
+
 ## Web 配置上游代理
 
 在 Web 后台打开 **代理设置 → 节点连接上游代理**，填写地址后保存，例如
@@ -123,12 +138,12 @@ docker compose -f compose.ghcr.yaml ps
 新版本会记录前后出口 IP；旧记录无实测数据，默认不计入，可勾选 **包含历史节点 IP 推断** 查看按旧节点地址推断的变化，推断数量会单独说明。
 统计时区来自浏览器，镜像显式安装 tzdata 以支持不同地区及夏令时规则。统计仍受 90 天保留期限制。
 
-## V2.2.0 固定版本升级
+## V2.2.3 固定版本升级
 
 ```bash
-SOFTETHER_IMAGE_TAG=2.2.0 docker compose -f compose.ghcr.yaml pull
-SOFTETHER_IMAGE_TAG=2.2.0 docker compose -f compose.ghcr.yaml up -d
+SOFTETHER_IMAGE_TAG=2.2.3 docker compose -f compose.ghcr.yaml pull
+SOFTETHER_IMAGE_TAG=2.2.3 docker compose -f compose.ghcr.yaml up -d
 ```
 
-需要后续操作仍固定版本时，编辑现有 `.env`，设置 `SOFTETHER_IMAGE_TAG=2.2.0`。保留 `data/`，不要清空凭据和切换历史。
-[本次发布说明](docs/releases/v2.2.2.md)列出了镜像、源码包与兼容性说明。
+需要后续操作仍固定版本时，编辑现有 `.env`，设置 `SOFTETHER_IMAGE_TAG=2.2.3`。保留 `data/`，不要清空凭据和切换历史。
+[本次发布说明](docs/releases/v2.2.3.md)列出了镜像、源码包与兼容性说明。

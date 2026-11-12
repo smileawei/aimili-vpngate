@@ -1,3 +1,13 @@
+# V2.2.3 正式版（2026-11-12）
+
+新增 Web HTTP/SOCKS5 代理认证配置：在「代理设置」中启用认证并设置独立账号密码，保存后立即用于新连接，重启后保留。密码不回显，留空保留原值，也可关闭认证。
+
+- SoftEther 镜像：`ghcr.io/smileawei/aimili-vpngate-softether:2.2.3`（amd64 / arm64）。
+- OpenVPN 镜像：`ghcr.io/smileawei/aimili-vpngate:2.2.3`；同时发布 `2.2`、`latest` 标签。
+- 116 项测试及桌面、手机界面检查通过。
+
+完整说明与升级命令见 [V2.2.3 发布说明](docs/releases/v2.2.3.md)。
+
 # V2.2.2 正式版（2026-11-12）
 
 修正节点网络延迟测量：节点列表、活动节点与节点排序统一使用本机直连节点的 TCP 建连耗时，不再混用 VPN 握手或代理出口请求耗时。
@@ -24,6 +34,7 @@
 
 本仓库支持通过 GitHub Actions 构建并发布 SoftEther 镜像，也可在本地构建；普通启动或重启复用已有镜像。
 SoftEther 默认 Web 端口为 `8787`，HTTP CONNECT / SOCKS5 代理共用端口 `7929`。
+可在 Web「代理设置」中启用代理认证并设置用户名、密码，与 Web 登录账号独立。密码留空保留原值，关闭认证后无需账号密码；保存后立即用于新连接，已有连接继续使用。设置保存在 `data/ui_auth.json`，重启后保留，优先于 `LOCAL_PROXY_USER` / `LOCAL_PROXY_PASS` 环境变量；从未保存 Web 代理认证配置时仍沿用环境变量。
 
 部署步骤见 [DEPLOYMENT.md](DEPLOYMENT.md)，完整修改记录见 [RELEASE_NOTES.md](RELEASE_NOTES.md)。
 

@@ -151,7 +151,7 @@ UPDATE_COMMAND = (
 )
 
 ROOT_DIR = Path(sys.executable).resolve().parent if globals().get("__compiled__") else Path(__file__).resolve().parent
-DEFAULT_APP_VERSION = "2.2.2"
+DEFAULT_APP_VERSION = "2.2.3"
 try:
     _version_text = (ROOT_DIR / "VERSION").read_text(encoding="utf-8").strip()
 except OSError:
@@ -396,6 +396,31 @@ def load_ui_config() -> dict[str, Any]:
                 
         return config
 
+def update_proxy_auth_config(config: dict[str, Any], payload: dict[str, Any]) -> None:
+    if not any(key in payload for key in ("local_proxy_auth_enabled", "local_proxy_username", "local_proxy_password")):
+        return
+    enabled = payload.get("local_proxy_auth_enabled")
+    if not isinstance(enabled, bool):
+        raise ValueError("代理认证开关必须为布尔值")
+    username = payload.get("local_proxy_username", "")
+    password = payload.get("local_proxy_password", "")
+    if not isinstance(username, str) or not isinstance(password, str):
+        raise ValueError("代理用户名和密码必须为文本")
+    username = username.strip()
+    _, current_password = proxy_server.get_proxy_credentials()
+    password = password or config.get("local_proxy_password", current_password or "")
+    if enabled:
+        for label, value in (("用户名", username), ("密码", password)):
+            if not 1 <= len(value.encode("utf-8")) <= 255:
+                raise ValueError(f"代理{label}不能为空，且 UTF-8 编码不能超过 255 字节")
+            if any(ord(char) < 32 or ord(char) == 127 for char in value):
+                raise ValueError(f"代理{label}不能包含控制字符")
+        if ":" in username:
+            raise ValueError("代理用户名不能包含冒号")
+    config.update(local_proxy_auth_enabled=enabled, local_proxy_username=username,
+                  local_proxy_password=password)
+
+
 def persist_discovery_countries(value: Any) -> list[str]:
     if not isinstance(value, list):
         raise ValueError("国家筛选范围必须是国家代码列表")
@@ -411,6 +436,7 @@ def persist_discovery_countries(value: Any) -> list[str]:
 # 初始化时优先从 ui_auth.json 加载保存的代理出站端口和网页端口配置以覆盖环境变量
 try:
     _init_cfg = load_ui_config()
+    proxy_server.configure_proxy_auth(_init_cfg)
     if "proxy_port" in _init_cfg:
         LOCAL_PROXY_PORT = bounded_int(_init_cfg["proxy_port"], LOCAL_PROXY_PORT, 1024, 65535)
     if "port" in _init_cfg:
@@ -564,6 +590,11 @@ def get_state() -> dict[str, Any]:
     state["secret_path"] = ui_cfg.get("secret_path", "EJsW2EeBo9lY")
     state["password_set"] = bool(ui_cfg.get("password"))
     state["proxy_port"] = ui_cfg.get("proxy_port", 7928)
+    proxy_user, proxy_password = proxy_server.get_proxy_credentials()
+    state["local_proxy_auth_enabled"] = proxy_server.proxy_auth_enabled()
+    state["local_proxy_username"] = ui_cfg.get("local_proxy_username", proxy_user or "")
+    state["local_proxy_password_set"] = bool(ui_cfg.get("local_proxy_password", proxy_password))
+    state.pop("local_proxy_password", None)
     state["softether_upstream_proxy_set"] = bool(vpn_utils.get_softether_upstream_proxy(DATA_DIR)) if VPN_BACKEND == "softether" else False
     state["routing_mode"] = ui_cfg.get("routing_mode", "auto")
     state["force_country"] = ui_cfg.get("force_country", "")
@@ -4149,6 +4180,12 @@ INDEX_HTML = r"""<!doctype html>
     }
     
     /* Inputs in settings */
+    .form-help {
+      font-size: 12px;
+      color: var(--text-secondary);
+      line-height: 1.6;
+      margin: 8px 0;
+    }
     .form-group {
       margin-bottom: 20px;
       text-align: left;
@@ -4314,12 +4351,12 @@ INDEX_HTML = r"""<!doctype html>
     <div class="dropdown">
       <button id="github_btn" class="btn-primary" type="button" aria-expanded="false" aria-controls="github_dropdown" style="background: rgba(255, 255, 255, 0.08); border: 1px solid var(--border-color); color: var(--text-primary);">
         <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" fill="currentColor" viewBox="0 0 16 16" style="vertical-align: middle; margin-right: 4px;"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.012 8.012 0 0 0 16 8c0-4.42-3.58-8-8-8z"/></svg>
-        <span id="github_version_label">V2.2.0 正式版</span>
+        <span id="github_version_label">V2.2.3 正式版</span>
         <svg xmlns="http://www.w3.org/2000/svg" style="width:12px; height:12px; margin-left: 2px;" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="3"><path stroke-linecap="round" stroke-linejoin="round" d="M19 9l-7 7-7-7" /></svg>
       </button>
       <div id="github_dropdown" class="dropdown-content github-dropdown">
         <div class="version-current">
-          <div id="current_version_label" class="version-current-label">V2.2.0 正式版</div>
+          <div id="current_version_label" class="version-current-label">V2.2.3 正式版</div>
           <div id="deployment_mode_label" class="version-current-meta">Python 源码部署 · 更新通道：main</div>
         </div>
         <button id="check_update_btn" type="button" onclick="checkForUpdate(event)">
@@ -4547,6 +4584,15 @@ INDEX_HTML = r"""<!doctype html>
           <input type="number" id="net_proxy_port" class="input-field" required min="1024" max="65535" placeholder="7928">
         </div>
 
+        <div class="form-group" style="margin-bottom: 16px;">
+          <label><input type="checkbox" id="net_proxy_auth_enabled" onchange="toggleProxyAuthFields()"> 启用 HTTP/SOCKS5 代理认证</label>
+          <p class="form-help">用于连接代理端口，与 Web 登录账号独立。关闭后无需账号密码。</p>
+          <label class="form-label" for="net_proxy_username">代理用户名</label>
+          <input type="text" id="net_proxy_username" class="input-field" autocomplete="off" placeholder="启用认证时必填">
+          <label class="form-label" for="net_proxy_password" style="margin-top: 8px;">代理密码</label>
+          <input type="password" id="net_proxy_password" class="input-field" autocomplete="new-password" placeholder="首次启用时必填">
+          <p class="form-help">保存后立即用于新连接；已设置的密码留空保留，密码不会回显。</p>
+        </div>
         <div id="net_upstream_group" class="form-group" style="margin-bottom: 16px; display: none;">
           <label class="form-label" for="net_upstream_proxy">节点连接上游代理</label>
           <input type="password" id="net_upstream_proxy" class="input-field" autocomplete="new-password" placeholder="留空表示直连">
@@ -5301,7 +5347,7 @@ function stableSortNodes() {
 }
 
 function render(){
-  const versionLabel = state.app_version_label || "V2.2.0 正式版";
+  const versionLabel = state.app_version_label || "V2.2.3 正式版";
   if ($("github_version_label")) $("github_version_label").textContent = versionLabel;
   if ($("current_version_label")) $("current_version_label").textContent = versionLabel;
   if ($("deployment_mode_label")) {
@@ -6282,12 +6328,22 @@ async function saveCredentials(e) {
   }
 }
 
+function toggleProxyAuthFields() {
+  const enabled = $("net_proxy_auth_enabled").checked;
+  $("net_proxy_username").disabled = !enabled;
+  $("net_proxy_password").disabled = !enabled;
+}
+
 function openNetworkModal() {
   $("network_error").style.display = "none";
   $("network_success").style.display = "none";
   $("network_form").reset();
   $("network_form").querySelectorAll("input, button").forEach(el => el.disabled = false);
   $("network_submit_btn").textContent = "保存修改";
+  $("net_proxy_auth_enabled").checked = !!(state && state.local_proxy_auth_enabled);
+  $("net_proxy_username").value = state && state.local_proxy_username || "";
+  $("net_proxy_password").placeholder = state && state.local_proxy_password_set ? "已设置，留空保留原密码" : "首次启用时必填";
+  toggleProxyAuthFields();
   $("net_upstream_group").style.display = state && state.vpn_backend === "softether" ? "block" : "none";
   $("net_upstream_proxy").placeholder = state && state.softether_upstream_proxy_set ? "已配置，留空保留原代理；输入新地址可替换" : "留空表示直连";
   
@@ -6355,6 +6411,9 @@ async function saveNetwork(e) {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         proxy_port: proxyPort,
+        local_proxy_auth_enabled: $("net_proxy_auth_enabled").checked,
+        local_proxy_username: $("net_proxy_username").value.trim(),
+        local_proxy_password: $("net_proxy_password").value,
         ...(state && state.vpn_backend === "softether" ? {
           softether_upstream_proxy: $("net_upstream_proxy").value.trim(),
           clear_upstream_proxy: $("net_upstream_direct").checked
@@ -7445,6 +7504,11 @@ class Handler(BaseHTTPRequestHandler):
                 
                 ui_cfg = load_ui_config()
                 expected_proxy_port = ui_cfg.get("proxy_port", 7928)
+                try:
+                    update_proxy_auth_config(ui_cfg, payload)
+                except ValueError as exc:
+                    self.send_json({"ok": False, "error": str(exc)}, HTTPStatus.BAD_REQUEST)
+                    return
                 upstream_changed = False
                 if "softether_upstream_proxy" in payload or "clear_upstream_proxy" in payload:
                     if VPN_BACKEND != "softether":
@@ -7484,6 +7548,8 @@ class Handler(BaseHTTPRequestHandler):
                 with lock:
                     DATA_DIR.mkdir(exist_ok=True, parents=True)
                     write_json(auth_file, ui_cfg)
+
+                    proxy_server.configure_proxy_auth(ui_cfg)
 
                 policy_message = "" if upstream_changed else enforce_active_node_allowed_by_routing(ui_cfg, "路由设置已更新")
                 
