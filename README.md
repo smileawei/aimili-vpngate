@@ -1,14 +1,14 @@
-# V2.2.1 正式版（2026-11-12）
+# V2.2.2 正式版（2026-11-12）
 
-SoftEther 默认直连，Web「代理设置」新增节点连接上游代理，可保存、替换或清除；节点检测、主连接和热备统一使用该配置。
+修正节点网络延迟测量：节点列表、活动节点与节点排序统一使用本机直连节点的 TCP 建连耗时，不再混用 VPN 握手或代理出口请求耗时。
 
-- SoftEther 镜像：`ghcr.io/smileawei/aimili-vpngate-softether:2.2.1`（amd64 / arm64）。
-- OpenVPN 镜像：`ghcr.io/smileawei/aimili-vpngate:2.2.1`；同时发布 `2.2`、`latest` 标签。
-- 配置保存后自动重启服务，代理地址不回显；清除后保持直连。
-- 111 项测试通过，保留完整源码包和 SHA-256 校验文件。
+- SoftEther 镜像：`ghcr.io/smileawei/aimili-vpngate-softether:2.2.2`（amd64 / arm64）。
+- OpenVPN 镜像：`ghcr.io/smileawei/aimili-vpngate:2.2.2`；同时发布 `2.2`、`latest` 标签。
+- 节点延迟不使用 Ping，也不经过上游代理；测量失败时显示带 `~` 的官方预估值。代理出口与热备的 HTTPS 耗时单独标为“请求耗时”。
+- 113 项测试通过，保留完整源码包和 SHA-256 校验文件。
 - 旧版本使用默认上游的部署，升级前需显式配置该地址，或升级后在 Web 重新填写。
 
-完整说明与升级命令见 [V2.2.1 发布说明](docs/releases/v2.2.1.md)。
+完整说明与升级命令见 [V2.2.2 发布说明](docs/releases/v2.2.2.md)。
 
 ## 本仓库新增功能（2026-11-10）
 

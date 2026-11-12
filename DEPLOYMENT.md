@@ -131,4 +131,4 @@ SOFTETHER_IMAGE_TAG=2.2.0 docker compose -f compose.ghcr.yaml up -d
 ```
 
 需要后续操作仍固定版本时，编辑现有 `.env`，设置 `SOFTETHER_IMAGE_TAG=2.2.0`。保留 `data/`，不要清空凭据和切换历史。
-[本次发布说明](docs/releases/v2.2.0.md)列出了镜像、源码包与兼容性说明。
+[本次发布说明](docs/releases/v2.2.2.md)列出了镜像、源码包与兼容性说明。
