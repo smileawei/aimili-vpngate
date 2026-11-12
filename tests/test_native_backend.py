@@ -11,6 +11,26 @@ from native import backend
 
 
 class NativeBackendTests(unittest.TestCase):
+    def test_saved_upstream_is_used_for_primary_and_probe_and_empty_means_direct(self):
+        def reply(*args, **kwargs):
+            return SimpleNamespace(returncode=1 if args[0] == "AccountGet" else 0,
+                                   stdout="Virtual Network Adapter Name|native\n")
+
+        with tempfile.TemporaryDirectory() as root, \
+                mock.patch.object(backend.vpn_utils, "DATA_DIR", Path(root)), \
+                mock.patch.dict(backend.os.environ, {"SOFTETHER_UPSTREAM_PROXY": "socks5://192.0.2.99:1080"}):
+            config = Path(root) / "ui_auth.json"
+            config.write_text('{"softether_upstream_proxy": "socks5://alice:p%40ss@192.0.2.3:1080"}')
+            for probe in (False, True):
+                with mock.patch.object(backend, "vpn", side_effect=reply) as vpn:
+                    backend.configure_account("gate", "native", "192.0.2.1", 443, probe=probe)
+                    vpn.assert_any_call("AccountProxySocks5", "gate", "/SERVER:192.0.2.3:1080", "/USERNAME:alice", "/PASSWORD:p@ss")
+            config.write_text('{"softether_upstream_proxy": ""}')
+            with mock.patch.object(backend, "vpn", side_effect=reply) as vpn:
+                backend.configure_account("gate", "native", "192.0.2.1", 443)
+                self.assertFalse(any(call.args[0].startswith("AccountProxy") for call in vpn.call_args_list))
+                self.assertTrue(any("/DISABLEUDP:no" in call.args for call in vpn.call_args_list))
+
     def test_reconnect_keeps_socks5_upstream_and_disables_direct_udp(self):
         def reply(*args, **kwargs):
             return SimpleNamespace(

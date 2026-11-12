@@ -1237,6 +1237,73 @@ class ManagerLogicTests(unittest.TestCase):
         finally:
             Path(script_path).unlink(missing_ok=True)
 
+    def upstream_settings_request(self, **updates):
+        handler = object.__new__(manager.Handler)
+        handler.validate_path = mock.Mock(return_value="/api/update_settings")
+        handler.is_authorized = mock.Mock(return_value=True)
+        handler.read_json_body = mock.Mock(return_value={
+            "proxy_port": 7928, "routing_mode": "auto", **updates,
+        })
+        handler.send_json = mock.Mock()
+        return handler
+
+    def test_upstream_web_save_preserve_and_clear_overrides_environment(self):
+        with (
+            mock.patch.object(manager, "VPN_BACKEND", "softether"),
+            mock.patch.dict(os.environ, {"SOFTETHER_UPSTREAM_PROXY": "socks5://192.0.2.1:1080"}),
+            mock.patch.object(manager.threading, "Thread") as restart,
+            mock.patch.object(manager, "enforce_active_node_allowed_by_routing"),
+        ):
+            handler = self.upstream_settings_request(softether_upstream_proxy="http://user:secret@192.0.2.2:8080")
+            handler.do_POST()
+            self.assertTrue(handler.send_json.call_args.args[0]["restart_needed"])
+            self.assertEqual("http://user:secret@192.0.2.2:8080", manager.vpn_utils.get_softether_upstream_proxy())
+            self.assertEqual(0o600, stat.S_IMODE((manager.DATA_DIR / "ui_auth.json").stat().st_mode))
+            state = manager.get_state()
+            self.assertTrue(state["softether_upstream_proxy_set"])
+            self.assertNotIn("secret@", json.dumps(state))
+            restart.return_value.start.assert_called_once()
+
+            for updates in ({}, {"softether_upstream_proxy": ""}):
+                handler = self.upstream_settings_request(**updates)
+                handler.do_POST()
+                self.assertFalse(handler.send_json.call_args.args[0]["restart_needed"])
+                self.assertEqual("http://user:secret@192.0.2.2:8080", manager.vpn_utils.get_softether_upstream_proxy())
+
+            handler = self.upstream_settings_request(clear_upstream_proxy=True)
+            handler.do_POST()
+            self.assertTrue(handler.send_json.call_args.args[0]["restart_needed"])
+            self.assertEqual("", manager.vpn_utils.get_softether_upstream_proxy())
+            self.assertEqual("", manager.load_ui_config()["softether_upstream_proxy"])
+            self.assertFalse(manager.get_state()["softether_upstream_proxy_set"])
+
+    def test_upstream_web_rejects_invalid_and_unauthorized_changes(self):
+        with mock.patch.object(manager, "VPN_BACKEND", "softether"):
+            for value in ("socks5://host", "https://host:443", "socks5://host:99999", "http://host:80/path", "http://host:80?query", "socks5://host:1080\ninvalid", None):
+                with self.subTest(value=value):
+                    handler = self.upstream_settings_request(softether_upstream_proxy=value)
+                    handler.do_POST()
+                    self.assertEqual(400, handler.send_json.call_args.args[1])
+                    self.assertNotIn("softether_upstream_proxy", manager.load_ui_config())
+            handler = self.upstream_settings_request(clear_upstream_proxy=True, softether_upstream_proxy="socks5://host:1080")
+            handler.do_POST()
+            self.assertEqual(400, handler.send_json.call_args.args[1])
+            handler = self.upstream_settings_request(clear_upstream_proxy=True)
+            handler.is_authorized.return_value = False
+            handler.do_POST()
+            self.assertEqual(401, handler.send_json.call_args.args[1])
+            handler.read_json_body.assert_not_called()
+
+    def test_upstream_defaults_to_direct_and_saved_setting_drives_health_check(self):
+        with mock.patch.dict(os.environ, {"SOFTETHER_UPSTREAM_PROXY": ""}):
+            self.assertEqual("", manager.vpn_utils.get_softether_upstream_proxy())
+            manager.write_json(manager.DATA_DIR / "ui_auth.json", {"softether_upstream_proxy": "socks5://192.0.2.8:1080"})
+            with mock.patch.object(manager, "VPN_BACKEND", "softether"), mock.patch.object(manager.subprocess, "run") as run:
+                run.return_value.returncode = 0
+                run.return_value.stdout = "203.0.113.1"
+                self.assertEqual("", manager.shared_proxy_failure())
+                self.assertIn("socks5://192.0.2.8:1080", run.call_args.args[0])
+
     def test_random_password_uses_cryptographic_randomness(self) -> None:
         with mock.patch.object(manager.secrets, "choice", side_effect=list("aA0aA0aA0aA0")) as choice:
             password = manager.generate_random_password()
@@ -1267,8 +1334,8 @@ class ManagerLogicTests(unittest.TestCase):
         self.assertEqual(519, entries[-1]["index"])
 
     def test_web_update_controls_only_expose_stable_main_channel(self) -> None:
-        self.assertEqual("2.2.0", manager.APP_VERSION)
-        self.assertEqual("V2.2.0 正式版", manager.APP_VERSION_LABEL)
+        self.assertEqual("2.2.1", manager.APP_VERSION)
+        self.assertEqual("V2.2.1 正式版", manager.APP_VERSION_LABEL)
         self.assertIn("检测更新", manager.INDEX_HTML)
         self.assertIn("/api/check_update", manager.INDEX_HTML)
         self.assertIn("/tree/main", manager.INDEX_HTML)
@@ -1313,7 +1380,7 @@ class ManagerLogicTests(unittest.TestCase):
     def test_release_workflow_uses_full_patch_version(self) -> None:
         workflow_text = (manager.ROOT_DIR / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
 
-        self.assertIn("default: v2.2.0", workflow_text)
+        self.assertIn("default: v2.2.1", workflow_text)
         self.assertIn("AimiliVPN V$(tr -d '\\r\\n' < VERSION) 正式版", workflow_text)
         self.assertNotIn("cut -d. -f1,2 VERSION", workflow_text)
 
@@ -1340,8 +1407,8 @@ class ManagerLogicTests(unittest.TestCase):
 
     def test_latest_release_check_reports_current_formal_version(self) -> None:
         release = {
-            "tag_name": "v2.2.0",
-            "name": "AimiliVPN V2.2.0 正式版",
+            "tag_name": "v2.2.1",
+            "name": "AimiliVPN V2.2.1 正式版",
             "draft": False,
             "prerelease": False,
         }
@@ -1349,10 +1416,10 @@ class ManagerLogicTests(unittest.TestCase):
             result = manager.check_latest_release()
 
         self.assertFalse(result["update_available"])
-        self.assertEqual("V2.2.0 正式版", result["current_version_label"])
+        self.assertEqual("V2.2.1 正式版", result["current_version_label"])
 
     def test_latest_release_check_reports_source_update_command(self) -> None:
-        release = {"tag_name": "v2.2.0", "draft": False, "prerelease": False}
+        release = {"tag_name": "v2.2.1", "draft": False, "prerelease": False}
         with (
             mock.patch.object(manager, "fetch_api_text", return_value=json.dumps(release)),
             mock.patch.object(manager, "DEPLOYMENT_MODE", "source"),
@@ -1365,7 +1432,7 @@ class ManagerLogicTests(unittest.TestCase):
         self.assertEqual("ml update", result["update_command"])
 
     def test_latest_release_check_reports_docker_update_command(self) -> None:
-        release = {"tag_name": "v2.2.0", "draft": False, "prerelease": False}
+        release = {"tag_name": "v2.2.1", "draft": False, "prerelease": False}
         with (
             mock.patch.object(manager, "fetch_api_text", return_value=json.dumps(release)),
             mock.patch.object(manager, "DEPLOYMENT_MODE", "docker"),

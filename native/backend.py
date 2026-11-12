@@ -44,7 +44,7 @@ def configure_account(name, nic, host, port, *, probe=False):
     vpn("AccountCreate", name, f"/SERVER:{host}:{port}", "/HUB:VPNGATE",
         "/USERNAME:vpn", f"/NICNAME:{nic}")
     vpn("AccountPasswordSet", name, "/PASSWORD:vpn", "/TYPE:standard")
-    upstream = os.environ.get("SOFTETHER_UPSTREAM_PROXY", "").strip()
+    upstream = vpn_utils.get_softether_upstream_proxy()
     if upstream:
         proxy = urlsplit(upstream)
         methods = {"http": "AccountProxyHttp", "socks4": "AccountProxySocks",

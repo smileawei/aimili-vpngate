@@ -1,19 +1,20 @@
-# V2.2.0 正式版（2026-11-11）
+# V2.2.1 正式版（2026-11-12）
 
-已汇总本仓库的 SoftEther 主备、防抖切换、主备展示、日夜主题、默认筛选、同地区优先、切换历史及 IP 变化统计功能。
+SoftEther 默认直连，Web「代理设置」新增节点连接上游代理，可保存、替换或清除；节点检测、主连接和热备统一使用该配置。
 
-- 正式版本：`v2.2.0`；SoftEther 镜像：`ghcr.io/smileawei/aimili-vpngate-softether:2.2.0`（amd64 / arm64）。
-- 保留 OpenVPN 镜像：`ghcr.io/smileawei/aimili-vpngate:2.2.0`；同时发布 `2.2`、`latest` 标签。
-- 提供完整源码包和 SHA-256 校验文件，补全 SoftEther、Compose 及部署文档；保留已有 `data/` 即可升级。
-- 更新检查、主干链接和安装器默认仓库改为本 fork；107 项测试通过。
+- SoftEther 镜像：`ghcr.io/smileawei/aimili-vpngate-softether:2.2.1`（amd64 / arm64）。
+- OpenVPN 镜像：`ghcr.io/smileawei/aimili-vpngate:2.2.1`；同时发布 `2.2`、`latest` 标签。
+- 配置保存后自动重启服务，代理地址不回显；清除后保持直连。
+- 111 项测试通过，保留完整源码包和 SHA-256 校验文件。
+- 旧版本使用默认上游的部署，升级前需显式配置该地址，或升级后在 Web 重新填写。
 
-完整说明与升级命令见 [V2.2.0 发布说明](docs/releases/v2.2.0.md)。
+完整说明与升级命令见 [V2.2.1 发布说明](docs/releases/v2.2.1.md)。
 
 ## 本仓库新增功能（2026-11-10）
 
 本节记录 [smileawei/aimili-vpngate](https://github.com/smileawei/aimili-vpngate) 在原项目基础上增加的功能，下方保留原项目说明。
 
-- **SoftEther SSL-VPN 后端**：新增 Docker Compose 部署，保留原 OpenVPN 后端；通过 `SOFTETHER_UPSTREAM_PROXY` 配置上游代理，节点检测、主连接及热备使用同一上游。
+- **SoftEther SSL-VPN 后端**：新增 Docker Compose 部署，保留原 OpenVPN 后端；默认直连，可在 Web「代理设置」配置上游代理，节点检测、主连接及热备使用同一上游。详见 [部署说明](DEPLOYMENT.md)。
 - **一主一热备**：长期保留两条独立隧道，分别维护网卡、DHCP 和路由；主连接故障时直接提升已验证的热备，随后自动补齐新的备用。
 - **快速故障恢复**：SoftEther 默认每 1 秒检测出口、连续失败 2 次触发恢复；双 HTTPS 检测并发执行，单路超时 1 秒。两次主动断线实测约 3.6 秒、2.3 秒恢复，实际耗时取决于网络及热备状态；已有 TCP 连接需客户端重连。
 - **可靠的备用检测**：完成握手、DHCP 和 HTTPS 出口验证后才视为可用；后台节点检测不阻塞出口守护，公共上游故障期间暂缓拉黑及切换，无健康热备时回退到普通切换和持续补齐。

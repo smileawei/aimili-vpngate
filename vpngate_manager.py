@@ -151,7 +151,7 @@ UPDATE_COMMAND = (
 )
 
 ROOT_DIR = Path(sys.executable).resolve().parent if globals().get("__compiled__") else Path(__file__).resolve().parent
-DEFAULT_APP_VERSION = "2.2.0"
+DEFAULT_APP_VERSION = "2.2.1"
 try:
     _version_text = (ROOT_DIR / "VERSION").read_text(encoding="utf-8").strip()
 except OSError:
@@ -564,6 +564,7 @@ def get_state() -> dict[str, Any]:
     state["secret_path"] = ui_cfg.get("secret_path", "EJsW2EeBo9lY")
     state["password_set"] = bool(ui_cfg.get("password"))
     state["proxy_port"] = ui_cfg.get("proxy_port", 7928)
+    state["softether_upstream_proxy_set"] = bool(vpn_utils.get_softether_upstream_proxy(DATA_DIR)) if VPN_BACKEND == "softether" else False
     state["routing_mode"] = ui_cfg.get("routing_mode", "auto")
     state["force_country"] = ui_cfg.get("force_country", "")
     state["routing_ip_type"] = ui_cfg.get("routing_ip_type", "all")
@@ -4556,6 +4557,13 @@ INDEX_HTML = r"""<!doctype html>
           <input type="number" id="net_proxy_port" class="input-field" required min="1024" max="65535" placeholder="7928">
         </div>
 
+        <div id="net_upstream_group" class="form-group" style="margin-bottom: 16px; display: none;">
+          <label class="form-label" for="net_upstream_proxy">节点连接上游代理</label>
+          <input type="password" id="net_upstream_proxy" class="input-field" autocomplete="new-password" placeholder="留空表示直连">
+          <div style="font-size: 12px; color: var(--text-secondary); margin-top: 8px;">支持 http、socks4、socks5、socks5h，例如 socks5://用户名:密码@主机:端口。修改后自动重启服务并重新连接节点。</div>
+          <label style="display: block; margin-top: 8px;"><input type="checkbox" id="net_upstream_direct"> 清除已配置的上游代理，改为直连</label>
+        </div>
+
         <div style="border-top: 1px dashed rgba(255,255,255,0.08); padding-top: 16px; margin-bottom: 16px;">
           <div class="form-group" style="margin-bottom: 16px;">
             <label class="form-label">IP 出站路由模式</label>
@@ -6288,6 +6296,10 @@ function openNetworkModal() {
   $("network_error").style.display = "none";
   $("network_success").style.display = "none";
   $("network_form").reset();
+  $("network_form").querySelectorAll("input, button").forEach(el => el.disabled = false);
+  $("network_submit_btn").textContent = "保存修改";
+  $("net_upstream_group").style.display = state && state.vpn_backend === "softether" ? "block" : "none";
+  $("net_upstream_proxy").placeholder = state && state.softether_upstream_proxy_set ? "已配置，留空保留原代理；输入新地址可替换" : "留空表示直连";
   
   if (state) {
     $("net_proxy_port").value = state.proxy_port || 7928;
@@ -6353,6 +6365,10 @@ async function saveNetwork(e) {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         proxy_port: proxyPort,
+        ...(state && state.vpn_backend === "softether" ? {
+          softether_upstream_proxy: $("net_upstream_proxy").value.trim(),
+          clear_upstream_proxy: $("net_upstream_direct").checked
+        } : {}),
         routing_mode: routingMode,
         force_country: forceCountry,
         routing_ip_type: routingIpType
@@ -6361,7 +6377,7 @@ async function saveNetwork(e) {
     const data = await readJsonResponse(res, "保存代理设置失败");
     if (res.ok && data.ok) {
       if (data.restart_needed) {
-        successDiv.textContent = "保存成功！代理出站端口已变更，页面将在 4 秒内自动刷新...";
+        successDiv.textContent = "保存成功！连接配置已变更，服务重启后页面将在 4 秒内自动刷新...";
         successDiv.style.display = "block";
         
         const inputs = $("network_form").querySelectorAll("input, button");
@@ -6832,7 +6848,7 @@ def shared_proxy_failure(scope: str = "") -> str:
         return "本地代理服务异常，保留当前节点，等待代理服务恢复"
     if VPN_BACKEND != "softether":
         return ""
-    upstream = os.environ.get("SOFTETHER_UPSTREAM_PROXY", "").strip()
+    upstream = vpn_utils.get_softether_upstream_proxy(DATA_DIR)
     if not upstream:
         return ""
     for url in ("https://api.ipify.org", "https://ip.sb"):
@@ -7442,6 +7458,23 @@ class Handler(BaseHTTPRequestHandler):
                 
                 ui_cfg = load_ui_config()
                 expected_proxy_port = ui_cfg.get("proxy_port", 7928)
+                upstream_changed = False
+                if "softether_upstream_proxy" in payload or "clear_upstream_proxy" in payload:
+                    if VPN_BACKEND != "softether":
+                        self.send_json({"ok": False, "error": "此上游代理设置仅适用于 SoftEther 后端"}, HTTPStatus.BAD_REQUEST)
+                        return
+                    try:
+                        new_upstream = vpn_utils.validate_softether_upstream_proxy(payload.get("softether_upstream_proxy", ""))
+                        if not isinstance(payload.get("clear_upstream_proxy", False), bool):
+                            raise ValueError("清除上游代理选项必须为布尔值")
+                        if payload.get("clear_upstream_proxy") and new_upstream:
+                            raise ValueError("请填写新代理地址或选择清除代理，不能同时选择")
+                    except ValueError as exc:
+                        self.send_json({"ok": False, "error": str(exc)}, HTTPStatus.BAD_REQUEST)
+                        return
+                    if new_upstream or payload.get("clear_upstream_proxy"):
+                        upstream_changed = new_upstream != vpn_utils.get_softether_upstream_proxy(DATA_DIR)
+                        ui_cfg["softether_upstream_proxy"] = new_upstream
                 fixed_node_id = current_fixed_node_id(ui_cfg) if routing_mode == "fixed_ip" else ""
                 
                 if ports_conflict(ui_cfg.get("port", 8787), new_proxy_port_int):
@@ -7465,15 +7498,15 @@ class Handler(BaseHTTPRequestHandler):
                     DATA_DIR.mkdir(exist_ok=True, parents=True)
                     write_json(auth_file, ui_cfg)
 
-                policy_message = enforce_active_node_allowed_by_routing(ui_cfg, "路由设置已更新")
+                policy_message = "" if upstream_changed else enforce_active_node_allowed_by_routing(ui_cfg, "路由设置已更新")
                 
-                restart_needed = (new_proxy_port_int != expected_proxy_port)
+                restart_needed = (new_proxy_port_int != expected_proxy_port or upstream_changed)
                 if restart_needed:
-                    self.send_json({"ok": True, "restart_needed": True, "message": "配置更新成功，代理出站端口变更，将在 2 秒内重启..."})
+                    self.send_json({"ok": True, "restart_needed": True, "message": "配置更新成功，连接配置变更，将在 2 秒内重启并重新连接..."})
                     
                     def restart_server():
                         time.sleep(2)
-                        print("[系统] 代理出站端口变更，进程即将退出以触发自动重启...", flush=True)
+                        print("[系统] 连接配置变更，进程即将退出以触发自动重启...", flush=True)
                         os._exit(0)
                     
                     threading.Thread(target=restart_server, daemon=True).start()

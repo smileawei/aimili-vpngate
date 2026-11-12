@@ -23,6 +23,36 @@ ip_cache_lock = threading.RLock()
 physical_interface_lock = threading.Lock()
 physical_interface_cache: tuple[str | None, float] = (None, 0.0)
 
+
+def get_softether_upstream_proxy(data_dir: Path | None = None) -> str:
+    """Persisted Web settings override the optional deployment environment."""
+    try:
+        config = json.loads(((data_dir or DATA_DIR) / "ui_auth.json").read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        config = {}
+    # Do not silently switch to direct access when a saved configuration is corrupt.
+    return str(config.get("softether_upstream_proxy",
+                          os.environ.get("SOFTETHER_UPSTREAM_PROXY", ""))).strip()
+
+
+def validate_softether_upstream_proxy(value: Any) -> str:
+    if not isinstance(value, str):
+        raise ValueError("上游代理必须是地址字符串")
+    value = value.strip()
+    if not value:
+        return ""
+    try:
+        proxy = urllib.parse.urlsplit(value)
+        valid = (len(value) <= 2048 and not any(c.isspace() or ord(c) < 32 for c in value)
+                 and proxy.scheme in {"http", "socks4", "socks5", "socks5h"}
+                 and proxy.hostname and proxy.port and proxy.path in ("", "/")
+                 and not proxy.query and not proxy.fragment)
+    except ValueError:
+        valid = False
+    if not valid:
+        raise ValueError("上游代理格式无效，请填写 http/socks4/socks5/socks5h://[用户名:密码@]主机:端口")
+    return value
+
 DATACENTER_PROVIDER_PATTERN = re.compile(
     r"(?:\b(?:cloud|colo|colocation|data[ -]?center|hosting|servers?|vps)\b|softether)",
     re.IGNORECASE,
