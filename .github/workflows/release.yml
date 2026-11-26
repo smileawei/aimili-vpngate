@@ -8,7 +8,6 @@ on:
       release_tag:
         description: Existing formal tag to publish, for example v2.2.3
         required: true
-        default: v2.2.3
         type: string
 
 concurrency:
@@ -37,7 +36,9 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
       - name: Verify formal version tag
-        run: test "$RELEASE_TAG" = "v$(tr -d '\r\n' < VERSION)"
+        run: |
+          [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          test "$RELEASE_TAG" = "v$(tr -d '\r\n' < VERSION)"
       - name: Compile application and backends
         run: python -m py_compile *.py native/*.py
       - name: Validate installation and deployments
@@ -45,11 +46,14 @@ jobs:
           bash -n install.sh
           docker compose config --quiet
           docker compose -f compose.ghcr.yaml config --quiet
+          if [ -f compose.openvpn.yaml ]; then
+            docker compose -f compose.openvpn.yaml config --quiet
+          fi
       - name: Run regression tests
         run: python -m unittest discover -s tests -v
 
   docker:
-    name: Publish ${{ matrix.backend }} images
+    name: Build and test ${{ matrix.backend }} image
     needs: test
     runs-on: ubuntu-24.04
     timeout-minutes: 45
@@ -83,58 +87,52 @@ jobs:
           SUFFIX: ${{ matrix.suffix }}
         run: |
           version="${RELEASE_TAG#v}"
-          minor="$(printf '%s' "$version" | cut -d. -f1,2)"
           echo "name=ghcr.io/${REPOSITORY,,}${SUFFIX}" >> "$GITHUB_OUTPUT"
           echo "version=$version" >> "$GITHUB_OUTPUT"
-          echo "minor=$minor" >> "$GITHUB_OUTPUT"
           echo "revision=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
       - uses: docker/login-action@v4
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      - name: Build and publish versioned images
+      - name: Build candidate image
+        id: build
         uses: docker/build-push-action@v7
         with:
           context: .
           file: ${{ matrix.file }}
           platforms: ${{ matrix.platforms }}
           push: true
-          tags: |
-            ${{ steps.image.outputs.name }}:${{ steps.image.outputs.version }}
-            ${{ steps.image.outputs.name }}:${{ steps.image.outputs.minor }}
-            ${{ steps.image.outputs.name }}:latest
+          tags: ${{ steps.image.outputs.name }}:ci-${{ github.run_id }}
           labels: |
             org.opencontainers.image.source=https://github.com/${{ github.repository }}
             org.opencontainers.image.revision=${{ steps.image.outputs.revision }}
           build-args: BUILD_VERSION=${{ steps.image.outputs.version }}
           cache-from: type=gha,scope=${{ matrix.scope }}
           cache-to: type=gha,mode=max,scope=${{ matrix.scope }}
-      - name: Smoke test every published architecture
+      - name: Smoke test every candidate architecture
         env:
-          IMAGE: ${{ steps.image.outputs.name }}:${{ steps.image.outputs.version }}
+          IMAGE: ${{ steps.image.outputs.name }}@${{ steps.build.outputs.digest }}
           VERSION: ${{ steps.image.outputs.version }}
           BACKEND: ${{ matrix.backend }}
           PLATFORMS: ${{ matrix.platforms }}
         run: |
           for platform in ${PLATFORMS//,/ }; do
-            docker run --rm --platform "$platform" --entrypoint python3 "$IMAGE" -c 'import sys,vpngate_manager as app; assert app.APP_VERSION==sys.argv[1]; assert app.VPN_BACKEND==sys.argv[2]; print(app.APP_VERSION_LABEL,app.VPN_PROTOCOL_LABEL)' "$VERSION" "$BACKEND"
+            docker run --rm --pull=always --platform "$platform" --entrypoint python3 "$IMAGE" -c 'import sys,vpngate_manager as app; assert app.APP_VERSION==sys.argv[1]; assert app.VPN_BACKEND==sys.argv[2]; print(app.APP_VERSION_LABEL,app.VPN_PROTOCOL_LABEL)' "$VERSION" "$BACKEND"
             if [ "$BACKEND" = softether ]; then
-              docker run --rm --platform "$platform" --entrypoint sh "$IMAGE" -c 'command -v dhclient && test -x /opt/native/dhcp.py && vpnclient start && vpncmd localhost /CLIENT /CMD NicList && vpnclient stop'
+              docker run --rm --pull=always --platform "$platform" --entrypoint sh "$IMAGE" -c 'command -v dhclient && test -x /opt/native/dhcp.py && vpnclient start && vpncmd localhost /CLIENT /CMD NicList && vpnclient stop'
             fi
           done
-      - name: Summarize published image
-        env:
-          IMAGE: ${{ steps.image.outputs.name }}
-          VERSION: ${{ steps.image.outputs.version }}
-        run: echo "Published $IMAGE:$VERSION and latest" >> "$GITHUB_STEP_SUMMARY"
-
   release:
-    name: Publish source archive and GitHub release
+    name: Publish verified images and GitHub release
     needs: docker
     runs-on: ubuntu-24.04
+    concurrency:
+      group: formal-release-publish
+      queue: max
     permissions:
       contents: write
+      packages: write
     steps:
       - uses: actions/checkout@v7
         with:
@@ -151,17 +149,51 @@ jobs:
           python -m py_compile *.py native/*.py
           docker compose config --quiet
           docker compose -f compose.ghcr.yaml config --quiet
+          if [ -f compose.openvpn.yaml ]; then
+            docker compose -f compose.openvpn.yaml config --quiet
+          fi
           python -c 'import vpngate_manager; print(vpngate_manager.APP_VERSION_LABEL)'
-      - name: Publish GitHub formal release
+      - uses: docker/setup-buildx-action@v4
+      - uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Publish verified images and GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          title="AimiliVPN V$(tr -d '\r\n' < VERSION) 正式版"
+          set -euo pipefail
+          version="${RELEASE_TAG#v}"
+          minor="${version%.*}"
+          image="ghcr.io/${GITHUB_REPOSITORY,,}"
+          images=("$image" "$image-softether")
+          published="$(gh api --paginate "repos/$GITHUB_REPOSITORY/releases?per_page=100" \
+            --jq '.[] | select((.draft or .prerelease) | not) | .tag_name | select(test("^v[0-9]+[.][0-9]+[.][0-9]+$"))')"
+          latest="$(printf '%s\n' "$published" "$RELEASE_TAG" | sort -V | tail -n 1)"
+          latest_minor="$(printf '%s\n' "$published" "$RELEASE_TAG" | awk -v prefix="v$minor." 'index($0, prefix) == 1' | sort -V | tail -n 1)"
+          latest_flag=--latest=false
+          if [ "$latest" = "$RELEASE_TAG" ]; then latest_flag=--latest; fi
+
+          for image in "${images[@]}"; do
+            docker buildx imagetools create --tag "$image:$version" "$image:ci-$GITHUB_RUN_ID"
+          done
+
+          title="AimiliVPN V$version 正式版"
           notes="docs/releases/${RELEASE_TAG}.md"
           if [ ! -f "$notes" ]; then notes=RELEASE_NOTES.md; fi
           if gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             gh release upload "$RELEASE_TAG" dist/* --clobber --repo "$GITHUB_REPOSITORY"
-            gh release edit "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --title "$title" --notes-file "$notes" --latest
+            gh release edit "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --title "$title" --notes-file "$notes" "$latest_flag"
           else
-            gh release create "$RELEASE_TAG" dist/* --repo "$GITHUB_REPOSITORY" --title "$title" --notes-file "$notes" --verify-tag --latest
+            gh release create "$RELEASE_TAG" dist/* --repo "$GITHUB_REPOSITORY" --title "$title" --notes-file "$notes" --verify-tag "$latest_flag"
           fi
+
+          for image in "${images[@]}"; do
+            aliases=()
+            if [ "$latest_minor" = "$RELEASE_TAG" ]; then aliases+=(--tag "$image:$minor"); fi
+            if [ "$latest" = "$RELEASE_TAG" ]; then aliases+=(--tag "$image:latest"); fi
+            if [ "${#aliases[@]}" -gt 0 ]; then
+              docker buildx imagetools create "${aliases[@]}" "$image:$version"
+            fi
+          done

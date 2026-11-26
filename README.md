@@ -22,7 +22,7 @@
 
 ## 本仓库新增功能（2026-11-10）
 
-本节记录 [smileawei/aimili-vpngate](https://github.com/smileawei/aimili-vpngate) 在原项目基础上增加的功能，下方保留原项目说明。
+本节记录 [smileawei/aimili-vpngate](https://github.com/smileawei/aimili-vpngate) 在原项目基础上增加的功能。
 
 - **SoftEther SSL-VPN 后端**：新增 Docker Compose 部署，保留原 OpenVPN 后端；默认直连，可在 Web「代理设置」配置上游代理，节点检测、主连接及热备使用同一上游。详见 [部署说明](DEPLOYMENT.md)。
 - **一主一热备**：长期保留两条独立隧道，分别维护网卡、DHCP 和路由；主连接故障时直接提升已验证的热备，随后自动补齐新的备用。
@@ -49,7 +49,7 @@ SoftEther 默认 Web 端口为 `8787`，HTTP CONNECT / SOCKS5 代理共用端口
 ### GitHub 自动构建 Docker 镜像（2026-11-11）
 
 - 新增 `Publish SoftEther image` 工作流：主干代码更新时自动运行测试，构建并发布 amd64、arm64 镜像，也支持在 Actions 页面手动运行。
-- 镜像地址：`ghcr.io/smileawei/aimili-vpngate-softether:latest`；每次还发布 `sha-<12位提交号>` 标签，可固定版本。
+- 主干通过镜像冒烟测试后发布 `sha-<12位提交号>`。正式发布提供版本标签和 `latest`，默认部署拉取正式版。
 - SoftEther Dockerfile 改为从 Debian 独立构建，无需预先构建本机基础镜像；支持构建缓存。
 - 新增 `compose.ghcr.yaml`，仅拉取镜像运行，无需在部署机器构建；详细步骤见 [部署说明](DEPLOYMENT.md#使用-github-发布的镜像)。
 - 发布使用 GitHub 内置 `GITHUB_TOKEN`，不需要 Docker Hub 密码；首次发布后若包为私有，需要在 GitHub Packages 中将其可见性设为 Public，才能匿名拉取。
@@ -102,8 +102,8 @@ SoftEther 默认 Web 端口为 `8787`，HTTP CONNECT / SOCKS5 代理共用端口
 
 **面向 Linux VPS 的 VPNGate 节点管理与 HTTP / HTTPS / SOCKS5 代理网关**
 
-[![正式版本](https://img.shields.io/github/v/release/baoweise-bot/aimili-vpngate?style=flat-square&label=正式版&color=16a34a)](https://github.com/baoweise-bot/aimili-vpngate/releases/latest)
-[![Docker](https://img.shields.io/badge/Docker-amd64%20%7C%20386%20%7C%20arm64%20%7C%20armv7-0ea5e9?style=flat-square&logo=docker&logoColor=white)](https://github.com/baoweise-bot/aimili-vpngate/pkgs/container/aimili-vpngate)
+[![正式版本](https://img.shields.io/github/v/release/smileawei/aimili-vpngate?style=flat-square&label=正式版&color=16a34a)](https://github.com/smileawei/aimili-vpngate/releases/latest)
+[![Docker](https://img.shields.io/badge/Docker-amd64%20%7C%20386%20%7C%20arm64%20%7C%20armv7-0ea5e9?style=flat-square&logo=docker&logoColor=white)](https://github.com/smileawei/aimili-vpngate/pkgs/container/aimili-vpngate)
 [![License](https://img.shields.io/badge/License-GPL--3.0-334155?style=flat-square)](LICENSE)
 
 **简体中文** · [English](docs/README.en.md) · [日本語](docs/README.ja.md) · [한국어](docs/README.ko.md)
@@ -152,7 +152,7 @@ AimiliVPN 使用 Python 标准库管理 VPNGate 节点，提供节点获取与�
 使用 `root` 用户在受支持的 Linux VPS 上执行：
 
 ```bash
-bash <(curl -Ls https://raw.githubusercontent.com/baoweise-bot/aimili-vpngate/main/install.sh)
+bash <(curl -Ls https://raw.githubusercontent.com/smileawei/aimili-vpngate/main/install.sh)
 ```
 
 安装完成后，终端会显示 Web 后台完整地址、随机安全路径、登录账号和密码。输入 `ml` 可打开管理菜单。
@@ -160,7 +160,7 @@ bash <(curl -Ls https://raw.githubusercontent.com/baoweise-bot/aimili-vpngate/ma
 无人值守安装可显式跳过首次参数询问，并自动生成安全路径和登录凭据：
 
 ```bash
-AIMILIVPN_NONINTERACTIVE=1 bash <(curl -Ls https://raw.githubusercontent.com/baoweise-bot/aimili-vpngate/main/install.sh)
+AIMILIVPN_NONINTERACTIVE=1 bash <(curl -Ls https://raw.githubusercontent.com/smileawei/aimili-vpngate/main/install.sh)
 ```
 
 > [!TIP]
@@ -178,7 +178,7 @@ AIMILIVPN_NONINTERACTIVE=1 bash <(curl -Ls https://raw.githubusercontent.com/bao
 ### 方式一：一键源码安装
 
 ```bash
-bash <(curl -Ls https://raw.githubusercontent.com/baoweise-bot/aimili-vpngate/main/install.sh)
+bash <(curl -Ls https://raw.githubusercontent.com/smileawei/aimili-vpngate/main/install.sh)
 ```
 
 安装器会部署到 `/opt/aimilivpn` 并注册系统服务。常用命令：
@@ -196,36 +196,36 @@ ml uninstall       # 卸载
 需要先审查脚本时：
 
 ```bash
-git clone --branch main --single-branch https://github.com/baoweise-bot/aimili-vpngate.git
+git clone --branch main --single-branch https://github.com/smileawei/aimili-vpngate.git
 cd aimili-vpngate
 sudo bash install.sh
 ```
 
-通用 Linux 源码包与 SHA-256 校验文件可在 [GitHub Releases](https://github.com/baoweise-bot/aimili-vpngate/releases/latest) 下载，版本变更记录也统一放在 Release Notes 中。
+通用 Linux 源码包与 SHA-256 校验文件可在 [GitHub Releases](https://github.com/smileawei/aimili-vpngate/releases/latest) 下载，版本变更记录也统一放在 Release Notes 中。
 
 ### 方式二：Docker Compose
 
-Docker 主机需要 `/dev/net/tun`、host 网络以及 `NET_ADMIN`、`NET_RAW` 权限。
+Docker 主机需要 `/dev/net/tun` 以及 `NET_ADMIN`、`NET_RAW` 权限。
 
 ```bash
-git clone --branch main --single-branch https://github.com/baoweise-bot/aimili-vpngate.git
+git clone --branch main --single-branch https://github.com/smileawei/aimili-vpngate.git
 cd aimili-vpngate
-docker compose pull
-docker compose up -d
-docker logs -f aimilivpn
+docker compose -f compose.ghcr.yaml pull
+docker compose -f compose.ghcr.yaml up -d
+docker compose -f compose.ghcr.yaml logs -f softether
 ```
 
-正式镜像：`ghcr.io/baoweise-bot/aimili-vpngate:2.1`
+SoftEther 正式镜像为 `ghcr.io/smileawei/aimili-vpngate-softether:latest`，支持 amd64 和 arm64。OpenVPN 可按部署说明单独启动。
 
 更新容器：
 
 ```bash
-docker compose pull
-docker compose up -d
+docker compose -f compose.ghcr.yaml pull
+docker compose -f compose.ghcr.yaml up -d
 ```
 
 <details>
-<summary><strong>查看 docker run 命令</strong></summary>
+<summary><strong>查看 OpenVPN 的 docker run 命令</strong></summary>
 
 ```bash
 docker run -d \
@@ -240,7 +240,7 @@ docker run -d \
   -e LOCAL_PROXY_HOST=127.0.0.1 \
   -e LOCAL_PROXY_PORT=7928 \
   -v aimilivpn-data:/data \
-  ghcr.io/baoweise-bot/aimili-vpngate:2.1
+  ghcr.io/smileawei/aimili-vpngate:latest
 ```
 
 </details>
@@ -249,13 +249,15 @@ docker run -d \
 <summary><strong>无法拉取 GHCR 时在 VPS 本地构建</strong></summary>
 
 ```bash
-git clone --branch main --single-branch https://github.com/baoweise-bot/aimili-vpngate.git
+git clone --branch main --single-branch https://github.com/smileawei/aimili-vpngate.git
 cd aimili-vpngate
 docker compose build
 docker compose up -d
 ```
 
 </details>
+
+OpenVPN Compose、端口映射和已有数据迁移见[部署说明](DEPLOYMENT.md)。
 
 <a id="connection"></a>
 ## 连接与使用
@@ -349,7 +351,7 @@ ssh -N \
 | 项目网站 / 交流论坛 | 公告、经验交流与讨论 | [339936.xyz](https://339936.xyz) |
 | Telegram 群 | 即时交流 | [t.me/arestemple](https://t.me/arestemple) |
 | YouTube 教程 | 安装和使用视频 | [观看视频](https://www.youtube.com/watch?v=s-ATfXR8BpI) |
-| GitHub Issues | 可复现的问题与功能建议 | [提交 Issue](https://github.com/baoweise-bot/aimili-vpngate/issues) |
+| GitHub Issues | 可复现的问题与功能建议 | [提交 Issue](https://github.com/smileawei/aimili-vpngate/issues) |
 
 <a id="legal"></a>
 ## 使用范围与法律声明
@@ -366,6 +368,6 @@ ssh -N \
 
 <div align="center">
 
-[正式版本](https://github.com/baoweise-bot/aimili-vpngate/releases/latest) · [问题反馈](https://github.com/baoweise-bot/aimili-vpngate/issues) · [GPL-3.0 License](LICENSE)
+[正式版本](https://github.com/smileawei/aimili-vpngate/releases/latest) · [问题反馈](https://github.com/smileawei/aimili-vpngate/issues) · [GPL-3.0 License](LICENSE)
 
 </div>

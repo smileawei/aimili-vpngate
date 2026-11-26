@@ -358,6 +358,10 @@ def load_ui_config() -> dict[str, Any]:
             config["password"] = generate_random_password()
             updated = True
 
+        if DEPLOYMENT_MODE == "docker":
+            # Docker forwards to the container ports configured at deployment.
+            config.update(port=UI_PORT, proxy_port=LOCAL_PROXY_PORT)
+
         normalized_port = bounded_int(config.get("port"), UI_PORT, 1, 65535)
         if normalized_port != config.get("port"):
             config["port"] = normalized_port
@@ -581,6 +585,8 @@ def get_state() -> dict[str, Any]:
     state["secret_path"] = ui_cfg.get("secret_path", "EJsW2EeBo9lY")
     state["password_set"] = bool(ui_cfg.get("password"))
     state["proxy_port"] = ui_cfg.get("proxy_port", 7928)
+    if DEPLOYMENT_MODE == "docker":
+        state["published_proxy_port"] = env_int("PUBLISHED_PROXY_PORT", 0, 0, 65535)
     proxy_user, proxy_password = proxy_server.get_proxy_credentials()
     state["local_proxy_auth_enabled"] = proxy_server.proxy_auth_enabled()
     state["local_proxy_username"] = ui_cfg.get("local_proxy_username", proxy_user or "")
@@ -5467,7 +5473,9 @@ function render(){
   if ($("target")) $("target").textContent = state.target_valid_nodes || 3;
   if ($("active")) $("active").textContent = activeNode ? 1 : 0; 
   
-  const localProxy = state.local_proxy || `http://127.0.0.1:${state.proxy_port || 7928}`;
+  const localProxy = state.published_proxy_port
+    ? `http://${formatUrlHost(window.location.hostname)}:${state.published_proxy_port}`
+    : state.local_proxy || `http://127.0.0.1:${state.proxy_port || 7928}`;
   const connectionLabel = state.is_connecting ? "正在切换连接" : (state.proxy_ok ? "代理出口正常" : (activeNode ? "正在检查出口" : "尚未连接"));
   const statusMessage = state.last_check_message || "";
   if ($("status")) { $("status").innerHTML=`<span class="status-dot"></span><span>代理入口：${esc(localProxy)}</span><span title="${esc(statusMessage)}">· ${esc(connectionLabel)}</span>`; }
@@ -6213,6 +6221,8 @@ function openCredentialsModal() {
   $("credentials_error").style.display = "none";
   $("credentials_success").style.display = "none";
   $("credentials_form").reset();
+  $("cred_port").readOnly = state?.deployment_mode === "docker";
+  $("cred_port").title = $("cred_port").readOnly ? "Docker 部署请通过容器端口映射调整宿主机端口" : "";
   if (state) {
     $("cred_username").value = state.username || "";
     $("cred_password").value = "";
@@ -6290,8 +6300,10 @@ async function saveCredentials(e) {
         
         setTimeout(() => {
           const protocol = window.location.protocol;
-          const host = formatUrlHost(window.location.hostname);
-          window.location.href = `${protocol}//${host}:${port}/${suffix ? suffix + '/' : ''}`;
+          const authority = state?.deployment_mode === "docker"
+            ? window.location.host
+            : `${formatUrlHost(window.location.hostname)}:${port}`;
+          window.location.href = `${protocol}//${authority}/${suffix ? suffix + '/' : ''}`;
         }, 4000);
       } else {
         successDiv.textContent = data.reauth_required ? "账号密码保存成功，请重新登录..." : "账号密码保存成功，已即时生效！";
@@ -6329,6 +6341,8 @@ function openNetworkModal() {
   $("network_error").style.display = "none";
   $("network_success").style.display = "none";
   $("network_form").reset();
+  $("net_proxy_port").readOnly = state?.deployment_mode === "docker";
+  $("net_proxy_port").title = $("net_proxy_port").readOnly ? "Docker 部署请通过容器端口映射调整宿主机端口" : "";
   $("network_form").querySelectorAll("input, button").forEach(el => el.disabled = false);
   $("network_submit_btn").textContent = "保存修改";
   $("net_proxy_auth_enabled").checked = !!(state && state.local_proxy_auth_enabled);
@@ -7432,6 +7446,10 @@ class Handler(BaseHTTPRequestHandler):
                 expected_port = ui_cfg.get("port", 8787)
                 expected_suffix = ui_cfg.get("secret_path", "EJsW2EeBo9lY")
 
+                if DEPLOYMENT_MODE == "docker" and new_port_int != expected_port:
+                    self.send_json({"ok": False, "error": "Docker 部署请通过容器端口映射调整宿主机端口"}, HTTPStatus.BAD_REQUEST)
+                    return
+
                 if ports_conflict(new_port_int, ui_cfg.get("proxy_port", 7928)):
                     self.send_json({"ok": False, "error": "网页管理端口不能与代理出站端口相同"}, HTTPStatus.BAD_REQUEST)
                     return
@@ -7495,6 +7513,9 @@ class Handler(BaseHTTPRequestHandler):
                 
                 ui_cfg = load_ui_config()
                 expected_proxy_port = ui_cfg.get("proxy_port", 7928)
+                if DEPLOYMENT_MODE == "docker" and new_proxy_port_int != expected_proxy_port:
+                    self.send_json({"ok": False, "error": "Docker 部署请通过容器端口映射调整宿主机端口"}, HTTPStatus.BAD_REQUEST)
+                    return
                 try:
                     update_proxy_auth_config(ui_cfg, payload)
                 except ValueError as exc:

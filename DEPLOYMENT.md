@@ -71,7 +71,18 @@ docker compose logs -f --tail=100 softether
 ```
 
 健康检查仅验证 Web 服务，VPN 出站状态可在后台查看或通过代理请求验证。
-原 OpenVPN 服务保留在 `legacy-openvpn` profile；两个后端应分别部署，避免共享数据目录和监听端口。
+
+## 宿主机端口和 OpenVPN 部署
+
+Docker 部署的容器监听端口由部署配置管理，网页中的端口字段为只读。可在 `.env` 中设置 `SOFTETHER_UI_PORT` 和 `SOFTETHER_PROXY_PORT` 更改宿主机端口，然后用对应的 Compose 文件执行 `up -d` 重新创建容器。
+
+OpenVPN 使用独立的 Compose 文件、宿主机管理端口 `8788` 和数据目录 `./data-openvpn`：
+
+```bash
+docker compose -f compose.openvpn.yaml up -d --build
+```
+
+从旧 `legacy-openvpn` 部署迁移时，先停止旧 OpenVPN 容器。用 `OPENVPN_DATA_DIR` 指向原数据目录或它的副本，保留凭据和运行数据。可用 `OPENVPN_UI_PORT` 指定宿主机管理端口。两个后端同时运行时，请为各自指定独立的数据目录和宿主机端口。
 
 ## 自动恢复
 
@@ -101,7 +112,7 @@ docker compose logs -f --tail=100 softether
 
 ## 使用 GitHub 发布的镜像
 
-主干代码更新后，GitHub Actions 的 **Publish SoftEther image** 会测试并发布：
+主干构建通过冒烟测试后发布 `sha-<12位提交号>`。正式发布通过各架构的冒烟测试后发布版本标签，最新正式版更新 `latest`：
 
 ```text
 ghcr.io/smileawei/aimili-vpngate-softether:latest

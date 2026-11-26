@@ -10,6 +10,7 @@ scratch
 _site
 .env
 data
+data-openvpn
 .agents
 .aws
 .codex

@@ -10,7 +10,10 @@ on:
       - mirror/**
       - tests/**
       - .dockerignore
+      - compose.yaml
+      - compose.native.yaml
       - compose.ghcr.yaml
+      - compose.openvpn.yaml
       - .github/workflows/softether-image.yml
   workflow_dispatch:
 
@@ -31,8 +34,11 @@ jobs:
           python-version: '3.11'
       - name: Run regression tests
         run: python -m unittest discover -s tests -v
-      - name: Validate image-only deployment
-        run: docker compose -f compose.ghcr.yaml config --quiet
+      - name: Validate Compose deployments
+        run: |
+          docker compose config --quiet
+          docker compose -f compose.ghcr.yaml config --quiet
+          docker compose -f compose.openvpn.yaml config --quiet
 
   publish:
     needs: test
@@ -58,37 +64,36 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      - name: Build and publish amd64 and arm64
+      - name: Build candidate for amd64 and arm64
+        id: build
         uses: docker/build-push-action@v7
         with:
           context: .
           file: native/Dockerfile
           platforms: linux/amd64,linux/arm64
           push: true
-          tags: |
-            ${{ steps.image.outputs.name }}:latest
-            ${{ steps.image.outputs.name }}:${{ steps.image.outputs.version }}
+          tags: ${{ steps.image.outputs.name }}:ci-${{ github.run_id }}
           labels: |
             org.opencontainers.image.source=https://github.com/${{ github.repository }}
             org.opencontainers.image.revision=${{ github.sha }}
           build-args: BUILD_VERSION=${{ steps.image.outputs.version }}
           cache-from: type=gha,scope=softether
           cache-to: type=gha,mode=max,scope=softether
-      - name: Smoke test published image
+      - name: Smoke test candidate
         env:
-          IMAGE: ${{ steps.image.outputs.name }}:${{ steps.image.outputs.version }}
+          IMAGE: ${{ steps.image.outputs.name }}@${{ steps.build.outputs.digest }}
         run: |
-          docker pull "$IMAGE"
           for platform in linux/amd64 linux/arm64; do
-            docker run --rm --platform "$platform" --entrypoint python3 "$IMAGE" -c 'import vpngate_manager, softether_backend, hotstandby; print(vpngate_manager.VPN_PROTOCOL_LABEL)'
-            docker run --rm --platform "$platform" --entrypoint sh "$IMAGE" -c 'command -v dhclient && test -x /opt/native/dhcp.py && vpnclient start && vpncmd localhost /CLIENT /CMD NicList && vpnclient stop'
+            docker run --rm --pull=always --platform "$platform" --entrypoint python3 "$IMAGE" -c 'import vpngate_manager, softether_backend, hotstandby; print(vpngate_manager.VPN_PROTOCOL_LABEL)'
+            docker run --rm --pull=always --platform "$platform" --entrypoint sh "$IMAGE" -c 'command -v dhclient && test -x /opt/native/dhcp.py && vpnclient start && vpncmd localhost /CLIENT /CMD NicList && vpnclient stop'
           done
-      - name: Show published images
+      - name: Publish verified commit image
         env:
           IMAGE: ${{ steps.image.outputs.name }}
           VERSION: ${{ steps.image.outputs.version }}
+          DIGEST: ${{ steps.build.outputs.digest }}
         run: |
+          docker buildx imagetools create --tag "$IMAGE:$VERSION" "$IMAGE@$DIGEST"
           echo "### SoftEther Docker image" >> "$GITHUB_STEP_SUMMARY"
-          echo "- $IMAGE:latest" >> "$GITHUB_STEP_SUMMARY"
           echo "- $IMAGE:$VERSION" >> "$GITHUB_STEP_SUMMARY"
           echo "- Platforms: linux/amd64, linux/arm64" >> "$GITHUB_STEP_SUMMARY"

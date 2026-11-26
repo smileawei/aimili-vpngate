@@ -1316,6 +1316,39 @@ class ManagerLogicTests(unittest.TestCase):
             self.assertEqual("", manager.load_ui_config()["softether_upstream_proxy"])
             self.assertFalse(manager.get_state()["softether_upstream_proxy_set"])
 
+    def test_docker_uses_deployment_ports_even_with_legacy_saved_ports(self):
+        auth_file = manager.DATA_DIR / "ui_auth.json"
+        saved = manager.load_ui_config()
+        saved.update(port=9000, proxy_port=9001)
+        manager.write_json(auth_file, saved)
+
+        with (
+            mock.patch.object(manager, "DEPLOYMENT_MODE", "docker"),
+            mock.patch.object(manager, "UI_PORT", 8787),
+            mock.patch.object(manager, "LOCAL_PROXY_PORT", 7929),
+        ):
+            config = manager.load_ui_config()
+            self.assertEqual((8787, 7929), (config["port"], config["proxy_port"]))
+            self.assertEqual(saved["password"], config["password"])
+        self.assertEqual(9000, manager.read_json(auth_file, {})["port"])
+
+    def test_docker_web_rejects_changes_to_either_listener_port(self):
+        with (
+            mock.patch.object(manager, "DEPLOYMENT_MODE", "docker"),
+            mock.patch.object(manager, "UI_PORT", 8787),
+            mock.patch.object(manager, "LOCAL_PROXY_PORT", 7929),
+            mock.patch.object(manager.threading, "Thread") as restart,
+        ):
+            proxy = self.upstream_settings_request(proxy_port=9001)
+            web = self.upstream_settings_request(port=9000, username="admin")
+            web.validate_path.return_value = "/api/update_credentials"
+            for handler in (proxy, web):
+                handler.do_POST()
+                response, status = handler.send_json.call_args.args
+                self.assertEqual(400, status)
+                self.assertIn("容器端口映射", response["error"])
+            restart.assert_not_called()
+
     def test_proxy_auth_web_save_preserve_disable_and_reload(self):
         with (
             mock.patch.object(proxy_server, "_configured_credentials", None),
@@ -1487,9 +1520,10 @@ class ManagerLogicTests(unittest.TestCase):
     def test_release_workflow_uses_full_patch_version(self) -> None:
         workflow_text = (manager.ROOT_DIR / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
 
-        self.assertIn("default: v2.2.3", workflow_text)
-        self.assertIn("AimiliVPN V$(tr -d '\\r\\n' < VERSION) 正式版", workflow_text)
-        self.assertNotIn("cut -d. -f1,2 VERSION", workflow_text)
+        self.assertIn('test "$RELEASE_TAG" = "v$(tr -d', workflow_text)
+        self.assertIn('version="${RELEASE_TAG#v}"', workflow_text)
+        self.assertIn('title="AimiliVPN V$version 正式版"', workflow_text)
+        self.assertIn('imagetools create --tag "$image:$version"', workflow_text)
 
     def test_latest_release_check_ignores_non_version_name_text(self) -> None:
         release = {

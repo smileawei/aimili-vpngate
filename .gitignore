@@ -70,6 +70,7 @@ Desktop.ini
 # Local Compose deployment state and credentials
 .env
 data/
+data-openvpn/
 
 # Local agent settings
 .agents/

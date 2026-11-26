@@ -24,6 +24,7 @@ RELEASE_FILES = [
     "compose.yaml",
     "compose.native.yaml",
     "compose.ghcr.yaml",
+    "compose.openvpn.yaml",
     "DEPLOYMENT.md",
     "native/Dockerfile",
     "native/start.py",
