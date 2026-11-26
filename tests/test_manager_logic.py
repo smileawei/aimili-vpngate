@@ -1558,15 +1558,17 @@ class ManagerLogicTests(unittest.TestCase):
             result["update_command"],
         )
 
-    def test_fetch_uses_github_mirror_after_official_sources(self) -> None:
+    def test_fetch_uses_configured_mirror_after_official_sources(self) -> None:
         csv_text = valid_snapshot()
+        mirror_url = "https://mirror.example.test/vpngate.csv"
 
         def fake_fetch(url, verify_ssl):
-            if url == manager.MIRROR_HTTPS_URL:
+            if url == mirror_url:
                 return csv_text
             raise TimeoutError("blocked")
 
         with (
+            mock.patch.object(manager, "MIRROR_HTTPS_URL", mirror_url),
             mock.patch.object(manager, "fetch_api_text", side_effect=fake_fetch) as fetch_mock,
             mock.patch.object(manager, "load_blacklist", return_value={}),
             mock.patch.object(manager, "log_to_json"),
@@ -1576,11 +1578,11 @@ class ManagerLogicTests(unittest.TestCase):
 
         self.assertEqual(1, len(nodes))
         self.assertEqual(
-            [manager.API_HTTPS_URL, manager.API_HTTP_URL, manager.MIRROR_HTTPS_URL],
+            [manager.API_HTTPS_URL, manager.API_HTTP_URL, mirror_url],
             [call.args[0] for call in fetch_mock.call_args_list],
         )
         self.assertEqual(csv_text, manager.API_CACHE_FILE.read_text(encoding="utf-8"))
-        self.assertEqual("github_pages_https", manager.get_state()["last_fetch_source"])
+        self.assertEqual("mirror_https", manager.get_state()["last_fetch_source"])
 
     def test_http_source_does_not_replace_trusted_cache(self) -> None:
         cached_text = valid_snapshot("198.51.100.20")

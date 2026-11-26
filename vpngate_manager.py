@@ -103,18 +103,9 @@ def ports_conflict(web_port: Any, proxy_port: Any) -> bool:
 
 API_HTTPS_URL = os.environ.get("VPNGATE_API_HTTPS_URL", "https://www.vpngate.net/api/iphone/").strip()
 API_HTTP_URL = os.environ.get("VPNGATE_API_HTTP_URL", "http://www.vpngate.net/api/iphone/").strip()
-MIRROR_HTTPS_URL = os.environ.get(
-    "VPNGATE_MIRROR_HTTPS_URL",
-    "https://baoweise-bot.github.io/aimili-vpngate/vpngate.csv",
-).strip()
-MIRROR_HTTP_URL = os.environ.get(
-    "VPNGATE_MIRROR_HTTP_URL",
-    "http://baoweise-bot.github.io/aimili-vpngate/vpngate.csv",
-).strip()
-MIRROR_META_URL = os.environ.get(
-    "VPNGATE_MIRROR_META_URL",
-    "https://baoweise-bot.github.io/aimili-vpngate/vpngate.meta.json",
-).strip()
+MIRROR_HTTPS_URL = os.environ.get("VPNGATE_MIRROR_HTTPS_URL", "").strip()
+MIRROR_HTTP_URL = os.environ.get("VPNGATE_MIRROR_HTTP_URL", "").strip()
+MIRROR_META_URL = os.environ.get("VPNGATE_MIRROR_META_URL", "").strip()
 # Kept as the primary URL for diagnostics and backwards-compatible state output.
 API_URL = API_HTTPS_URL
 FETCH_INTERVAL_SECONDS = env_int("FETCH_INTERVAL_SECONDS", 1260, 1)
@@ -1055,8 +1046,8 @@ def api_network_sources() -> list[tuple[str, str]]:
     configured = [
         ("official_https", API_HTTPS_URL),
         ("official_http", API_HTTP_URL),
-        ("github_pages_https", MIRROR_HTTPS_URL),
-        ("github_pages_http_redirect_https", MIRROR_HTTP_URL),
+        ("mirror_https", MIRROR_HTTPS_URL),
+        ("mirror_http", MIRROR_HTTP_URL),
     ]
     sources: list[tuple[str, str]] = []
     seen: set[str] = set()
@@ -1161,7 +1152,7 @@ def fetch_candidates() -> list[dict[str, Any]]:
         load_ui_config().get("discovery_countries")
     )
     last_err: Exception | None = None
-    log_to_json("INFO", "Main", "开始按官方、GitHub Pages、本地缓存顺序拉取节点列表...")
+    log_to_json("INFO", "Main", "开始从官方节点源、已配置的镜像或本地快照获取节点列表...")
 
     for source_name, url in api_network_sources():
         try:
@@ -1190,7 +1181,7 @@ def fetch_candidates() -> list[dict[str, Any]]:
             )
             mirror_generated_at = 0.0
             mirror_freshness = ""
-            if source_name.startswith("github_pages"):
+            if source_name.startswith("mirror_"):
                 mirror_generated_at, mirror_freshness = read_mirror_freshness()
             source_note = f"，{mirror_freshness}" if mirror_freshness else ""
 
